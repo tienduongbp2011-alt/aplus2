@@ -1,0 +1,6 @@
+{
+  "name": "APLUS 2 – Quản lý Trung tâm Giáo dục",
+  "description": "Hệ thống quản lý toàn diện APLUS 2 – Trung tâm Bồi dưỡng Văn hoá và Ngoại ngữ Quốc tế: giáo viên, lớp học, học viên, lịch học, điểm danh, bài tập, học phí, lương và báo cáo.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
