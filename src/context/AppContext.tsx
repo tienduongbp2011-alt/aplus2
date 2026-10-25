@@ -23,6 +23,15 @@ import {
 } from '../types';
 import { createEmptyProductionDatabase, createInitialSeedDatabase } from '../data/seedData';
 import { getClassAssignedTeacherCodes } from '../services/businessLogic';
+import {
+  fetchDatabaseFromSupabase,
+  saveDatabaseToSupabase,
+  supabase,
+  SUPABASE_MAIN_ROW_ID,
+  SUPABASE_TABLE_NAME,
+  SUPABASE_URL,
+  SupabaseSyncStatus,
+} from '../services/supabaseClient';
 import { formatDateVN, getTodayISO } from '../utils/formatters';
 
 const STORAGE_KEY = 'APLUS2_EDU_MANAGER_DB_V3';
@@ -49,6 +58,11 @@ interface AppContextValue {
   updateDb: (updater: (prev: AppDatabase) => AppDatabase, auditInfo?: { action: string; target: string; detail: string }) => void;
   resetDemoData: () => void;
   clearAllDemoData: () => void;
+  supabaseStatus: SupabaseSyncStatus;
+  supabaseLastSync: string | null;
+  supabaseError: string | null;
+  supabaseProjectUrl: string;
+  syncWithSupabaseNow: (forcePushCurrent?: boolean) => Promise<void>;
   activeModule: string;
   setActiveModule: (mod: string) => void;
   selectedClassCodeForDetail: string | null;
@@ -110,6 +124,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [selectedClassCodeForDetail, setSelectedClassCodeForDetail] = useState<string | null>(null);
   const [selectedStudentCodeForDetail, setSelectedStudentCodeForDetail] = useState<string | null>(null);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
+
+  const [supabaseStatus, setSupabaseStatus] = useState<SupabaseSyncStatus>('CONNECTING');
+  const [supabaseLastSync, setSupabaseLastSync] = useState<string | null>(null);
+  const [supabaseError, setSupabaseError] = useState<string | null>(null);
 
   const [currentAccountId, setCurrentAccountId] = useState<string>(() => {
     return localStorage.getItem(USER_STORAGE_KEY) || 'ACC-001';
@@ -192,6 +210,109 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     notify(`Đã chuyển sang vai trò: ${found.fullName}`, 'SUCCESS');
   };
 
+  const pushDbToSupabase = async (targetDb: AppDatabase, showToastOnSuccess = false) => {
+    setSupabaseStatus('SYNCING');
+    const res = await saveDatabaseToSupabase(targetDb);
+    if (res.ok) {
+      setSupabaseStatus('CONNECTED');
+      setSupabaseLastSync(res.updatedAt || new Date().toISOString());
+      setSupabaseError(null);
+      if (showToastOnSuccess) {
+        notify('Đã đồng bộ toàn bộ dữ liệu lên Supabase thành công!', 'SUCCESS');
+      }
+    } else {
+      setSupabaseStatus(res.status);
+      setSupabaseError(res.errorMessage || null);
+      if (showToastOnSuccess && res.errorMessage) {
+        notify(res.errorMessage, res.status === 'TABLE_MISSING' ? 'WARNING' : 'ERROR');
+      }
+    }
+  };
+
+  const syncWithSupabaseNow = async (forcePushCurrent = false) => {
+    setSupabaseStatus('CONNECTING');
+    if (forcePushCurrent) {
+      await pushDbToSupabase(db, true);
+      return;
+    }
+
+    const res = await fetchDatabaseFromSupabase();
+    if (res.status === 'CONNECTED') {
+      if (res.data && res.data.accounts && res.data.settings) {
+        setDb(res.data);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(res.data));
+        setSupabaseStatus('CONNECTED');
+        setSupabaseLastSync(res.updatedAt || new Date().toISOString());
+        setSupabaseError(null);
+        notify('Đã tải và đồng bộ dữ liệu mới nhất từ Supabase!', 'SUCCESS');
+      } else {
+        // Bảng trên Supabase đang trống -> đẩy dữ liệu hiện tại lên Supabase
+        await pushDbToSupabase(db, true);
+      }
+    } else {
+      setSupabaseStatus(res.status);
+      setSupabaseError(res.errorMessage || null);
+    }
+  };
+
+  useEffect(() => {
+    let isMounted = true;
+    (async () => {
+      const res = await fetchDatabaseFromSupabase();
+      if (!isMounted) return;
+      if (res.status === 'CONNECTED') {
+        if (res.data && res.data.accounts && res.data.settings) {
+          setDb(res.data);
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(res.data));
+          setSupabaseStatus('CONNECTED');
+          setSupabaseLastSync(res.updatedAt || new Date().toISOString());
+          setSupabaseError(null);
+        } else {
+          // Bảng mới tạo trên Supabase chưa có dòng dữ liệu -> đẩy dữ liệu ban đầu lên
+          const saveRes = await saveDatabaseToSupabase(db);
+          if (!isMounted) return;
+          setSupabaseStatus(saveRes.status);
+          setSupabaseLastSync(saveRes.updatedAt || new Date().toISOString());
+          setSupabaseError(saveRes.errorMessage || null);
+        }
+      } else {
+        setSupabaseStatus(res.status);
+        setSupabaseError(res.errorMessage || null);
+      }
+    })();
+
+    // Lắng nghe thay đổi Realtime từ Supabase (nếu bật Realtime cho bảng)
+    const channel = supabase
+      ? supabase
+          .channel('aplus2_realtime_sync')
+          .on(
+            'postgres_changes',
+            {
+              event: '*',
+              schema: 'public',
+              table: SUPABASE_TABLE_NAME,
+              filter: `id=eq.${SUPABASE_MAIN_ROW_ID}`,
+            },
+            (payload) => {
+              const newRow = payload.new as { payload?: AppDatabase; updated_at?: string } | undefined;
+              if (newRow && newRow.payload && newRow.payload.accounts) {
+                setDb(newRow.payload);
+                setSupabaseStatus('CONNECTED');
+                setSupabaseLastSync(newRow.updated_at || new Date().toISOString());
+              }
+            }
+          )
+          .subscribe()
+      : null;
+
+    return () => {
+      isMounted = false;
+      if (channel && supabase) {
+        supabase.removeChannel(channel);
+      }
+    };
+  }, []);
+
   const updateDb = (
     updater: (prev: AppDatabase) => AppDatabase,
     auditInfo?: { action: string; target: string; detail: string }
@@ -210,7 +331,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         };
         next.auditLogs = [newLog, ...(next.auditLogs || [])];
       }
-      // Đồng bộ nền lên backend API nếu có
+      const nextCopy = { ...next };
+      // Đồng bộ tự động lên Supabase
+      void pushDbToSupabase(nextCopy, false);
+      // Đồng bộ nền lên backend API nội bộ
       fetch('/api/sync-state', {
         method: 'POST',
         headers: {
@@ -220,7 +344,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         },
         body: JSON.stringify({ updatedAt: new Date().toISOString() }),
       }).catch(() => {});
-      return { ...next };
+      return nextCopy;
     });
   };
 
@@ -228,13 +352,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setIsLoading(true);
     setTimeout(() => {
       const seed = createInitialSeedDatabase();
-      // Giữ lại logo và hình nền đăng nhập nếu người dùng đã tải lên
       seed.settings.logoDataUrl = db.settings.logoDataUrl || '';
       seed.settings.loginBackgroundDataUrl = db.settings.loginBackgroundDataUrl || '';
       setDb(seed);
       localStorage.setItem(STORAGE_KEY, JSON.stringify(seed));
+      void pushDbToSupabase(seed, false);
       setIsLoading(false);
-      notify('Đã khôi phục bộ dữ liệu minh hoạ chuẩn của APLUS 2.', 'SUCCESS');
+      notify('Đã khôi phục bộ dữ liệu minh hoạ chuẩn của APLUS 2 và đồng bộ Supabase.', 'SUCCESS');
     }, 150);
   };
 
@@ -246,9 +370,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setSelectedClassCodeForDetail(null);
       setSelectedStudentCodeForDetail(null);
       localStorage.setItem(STORAGE_KEY, JSON.stringify(emptyDb));
+      void pushDbToSupabase(emptyDb, false);
       setIsLoading(false);
       notify(
-        'Đã xoá sạch toàn bộ dữ liệu Demo! Hệ thống đã sẵn sàng để bạn nhập dữ liệu thực tế của trung tâm.',
+        'Đã xoá sạch toàn bộ dữ liệu Demo (đồng bộ trên Supabase)! Hệ thống đã sẵn sàng để bạn nhập dữ liệu thực tế.',
         'SUCCESS'
       );
     }, 150);
@@ -1069,6 +1194,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateDb,
         resetDemoData,
         clearAllDemoData,
+        supabaseStatus,
+        supabaseLastSync,
+        supabaseError,
+        supabaseProjectUrl: SUPABASE_URL,
+        syncWithSupabaseNow,
         activeModule,
         setActiveModule,
         selectedClassCodeForDetail,

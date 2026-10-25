@@ -9,7 +9,9 @@ import {
   BookOpen,
   Calendar,
   CheckSquare,
+  Copy,
   CreditCard,
+  Database,
   DollarSign,
   FileBarChart,
   GraduationCap,
@@ -31,7 +33,8 @@ import {
 } from 'lucide-react';
 import { AppProvider, useApp } from './context/AppContext';
 import { canRoleAccessModule } from './services/businessLogic';
-import { formatCurrency, getRoleLabel } from './utils/formatters';
+import { SUPABASE_SETUP_SQL } from './services/supabaseClient';
+import { formatCurrency, formatDateTimeVN, getRoleLabel } from './utils/formatters';
 import { LoginWindow } from './components/LoginWindow';
 import { DashboardView } from './modules/DashboardView';
 import { TeachersView } from './modules/TeachersView';
@@ -82,9 +85,15 @@ const MainWorkspace: React.FC = () => {
     setActiveModule,
     saveSettings,
     toasts,
+    notify,
     dismissToast,
     setSelectedClassCodeForDetail,
     setSelectedStudentCodeForDetail,
+    supabaseStatus,
+    supabaseLastSync,
+    supabaseError,
+    supabaseProjectUrl,
+    syncWithSupabaseNow,
   } = useApp();
 
   const [sidebarOpenMobile, setSidebarOpenMobile] = useState(false);
@@ -92,6 +101,7 @@ const MainWorkspace: React.FC = () => {
   const [showNotifPopover, setShowNotifPopover] = useState(false);
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
   const [isClearConfirmOpen, setIsClearConfirmOpen] = useState(false);
+  const [isSupabaseModalOpen, setIsSupabaseModalOpen] = useState(false);
 
   const handleQuickLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -291,10 +301,12 @@ const MainWorkspace: React.FC = () => {
           })}
         </nav>
 
-        {/* Chân Sidebar: Chế độ demo rõ ràng */}
+        {/* Chân Sidebar: Trạng thái kết nối Supabase */}
         <div className="border-t border-white/15 bg-black/15 px-4 py-3 text-xs text-[#D4E8DB]">
-          <div className="font-bold text-amber-300">
-            Chế độ demo – dữ liệu lưu trên thiết bị này
+          <div className="font-bold text-emerald-300">
+            {supabaseStatus === 'CONNECTED'
+              ? 'Đã kết nối & Đồng bộ đám mây Supabase'
+              : 'Đã cấu hình Supabase (Nhấn nút Supabase trên đầu trang)'}
           </div>
           <div className="mt-0.5 opacity-85">
             Múi giờ: Asia/Ho_Chi_Minh · Tiền tệ: VNĐ
@@ -325,7 +337,9 @@ const MainWorkspace: React.FC = () => {
                   </span>
                 </div>
                 <div className="text-xs text-[#008653] font-bold">
-                  Chế độ demo – dữ liệu lưu trên thiết bị này (Hỗ trợ xuất/nhập Excel .xlsx & sao lưu)
+                  {supabaseStatus === 'CONNECTED'
+                    ? `Đang đồng bộ trực tiếp với Supabase (${supabaseProjectUrl})`
+                    : `Dự án Supabase: ${supabaseProjectUrl}`}
                 </div>
               </div>
             </div>
@@ -413,6 +427,30 @@ const MainWorkspace: React.FC = () => {
                 )}
               </div>
 
+              {/* Nút Kết nối & Đồng bộ Supabase */}
+              <button
+                onClick={() => setIsSupabaseModalOpen(true)}
+                className={`inline-flex items-center gap-1.5 rounded border px-3 py-1.5 text-xs font-bold transition ${
+                  supabaseStatus === 'CONNECTED'
+                    ? 'border-[#008653] bg-[#F2FAF5] text-[#00543C] hover:bg-[#D4E8DB]/60'
+                    : supabaseStatus === 'TABLE_MISSING'
+                      ? 'border-amber-500 bg-amber-50 text-amber-900 hover:bg-amber-100'
+                      : 'border-[#D4E8DB] bg-white text-[#173B2C] hover:bg-[#F2FAF5]'
+                }`}
+                title="Quản lý kết nối & đồng bộ dữ liệu trên Supabase"
+              >
+                <Database className="h-3.5 w-3.5 text-[#008653]" />
+                <span>
+                  {supabaseStatus === 'CONNECTED'
+                    ? 'Supabase: Đã kết nối'
+                    : supabaseStatus === 'SYNCING' || supabaseStatus === 'CONNECTING'
+                      ? 'Supabase: Đang đồng bộ...'
+                      : supabaseStatus === 'TABLE_MISSING'
+                        ? 'Supabase: Cần tạo bảng SQL'
+                        : 'Supabase Cloud'}
+                </span>
+              </button>
+
               {/* Nút Xoá sạch dữ liệu Demo */}
               <button
                 onClick={() => setIsClearConfirmOpen(true)}
@@ -461,6 +499,119 @@ const MainWorkspace: React.FC = () => {
         {isLoginModalOpen && (
           <div className="fixed inset-0 z-50 overflow-y-auto">
             <LoginWindow onCloseModal={() => setIsLoginModalOpen(false)} />
+          </div>
+        )}
+
+        {/* Modal Quản lý Kết nối & Đồng bộ Supabase */}
+        {isSupabaseModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4">
+            <div className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-lg border border-[#D4E8DB] bg-white shadow-2xl">
+              <div className="flex items-center justify-between bg-[#00543C] px-6 py-4 text-white">
+                <div className="flex items-center gap-2">
+                  <Database className="h-5 w-5" />
+                  <h3 className="text-xl font-bold">
+                    Kết nối Cơ sở dữ liệu Đám mây Supabase
+                  </h3>
+                </div>
+                <button onClick={() => setIsSupabaseModalOpen(false)}>
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+              <div className="space-y-4 p-6 text-sm text-[#173B2C]">
+                <div className="rounded-lg border border-[#D4E8DB] bg-[#F2FAF5] p-4 space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-bold text-[#00543C]">
+                      Project URL: <code className="text-[#008653]">{supabaseProjectUrl}</code>
+                    </span>
+                    <span
+                      className={`rounded px-2.5 py-0.5 text-xs font-bold ${
+                        supabaseStatus === 'CONNECTED'
+                          ? 'bg-[#008653] text-white'
+                          : 'bg-amber-100 text-amber-900'
+                      }`}
+                    >
+                      {supabaseStatus === 'CONNECTED'
+                        ? 'ĐÃ KẾT NỐI & ĐỒNG BỘ TỰ ĐỘNG'
+                        : supabaseStatus === 'TABLE_MISSING'
+                          ? 'CHỜ TẠO BẢNG TRÊN SUPABASE SQL EDITOR'
+                          : supabaseStatus}
+                    </span>
+                  </div>
+                  {supabaseLastSync && (
+                    <div className="text-xs text-[#173B2C]/80">
+                      Lần đồng bộ gần nhất: <strong>{formatDateTimeVN(supabaseLastSync)}</strong>
+                    </div>
+                  )}
+                  {supabaseError && (
+                    <div className="rounded border border-amber-300 bg-amber-50 p-2.5 text-xs font-bold text-amber-900">
+                      {supabaseError}
+                    </div>
+                  )}
+                </div>
+
+                {/* Hướng dẫn chạy lệnh SQL 1 lần duy nhất nếu chưa có bảng */}
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-bold text-[#00543C]">
+                      Lệnh SQL khởi tạo bảng <code>aplus2_app_state</code> trên Supabase (Chạy 1 lần duy nhất trong SQL Editor):
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard?.writeText(SUPABASE_SETUP_SQL);
+                        notify(
+                          'Đã sao chép lệnh SQL! Hãy mở mục SQL Editor trên Supabase, dán vào và bấm Run.'
+                        );
+                      }}
+                      className="inline-flex items-center gap-1 rounded bg-[#008653] px-3 py-1 text-xs font-bold text-white hover:bg-[#006B42]"
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                      Sao chép lệnh SQL
+                    </button>
+                  </div>
+                  <pre className="overflow-x-auto rounded border border-[#D4E8DB] bg-gray-900 p-3 font-mono text-xs text-emerald-300">
+                    {SUPABASE_SETUP_SQL}
+                  </pre>
+                  <div className="text-xs text-[#173B2C]/80">
+                    Mở nhanh trang SQL Editor của dự án Supabase của bạn:{' '}
+                    <a
+                      href="https://supabase.com/dashboard/project/gdoxbonoiumnpiswqris/sql/new"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-bold text-[#008653] underline"
+                    >
+                      https://supabase.com/dashboard/project/gdoxbonoiumnpiswqris/sql/new
+                    </a>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap justify-end gap-2 border-t border-[#D4E8DB] pt-4">
+                  <button
+                    type="button"
+                    onClick={() => setIsSupabaseModalOpen(false)}
+                    className="rounded border border-[#D4E8DB] px-4 py-2 font-bold"
+                  >
+                    Đóng
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void syncWithSupabaseNow(false)}
+                    className="inline-flex items-center gap-1.5 rounded border border-[#008653] bg-white px-4 py-2 font-bold text-[#008653] hover:bg-[#F2FAF5]"
+                  >
+                    <RefreshCw className="h-4 w-4" />
+                    Tải dữ liệu từ Supabase về máy
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void syncWithSupabaseNow(true)}
+                    className="inline-flex items-center gap-1.5 rounded bg-[#008653] px-5 py-2 font-bold text-white hover:bg-[#006B42]"
+                  >
+                    <Database className="h-4 w-4" />
+                    Đẩy dữ liệu hiện tại lên Supabase ngay
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         )}
 
