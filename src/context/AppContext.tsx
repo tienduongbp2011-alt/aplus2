@@ -33,6 +33,7 @@ import {
   SupabaseSyncStatus,
 } from '../services/supabaseClient';
 import { formatDateVN, getTodayISO } from '../utils/formatters';
+import { restoreDatabaseFromSavedFiles } from '../utils/excelService';
 
 const STORAGE_KEY = 'APLUS2_EDU_MANAGER_DB_V3';
 const USER_STORAGE_KEY = 'APLUS2_CURRENT_ACCOUNT_ID_V1';
@@ -56,6 +57,7 @@ interface AppContextValue {
   notify: (text: string, type?: 'SUCCESS' | 'ERROR' | 'WARNING') => void;
   dismissToast: (id: string) => void;
   updateDb: (updater: (prev: AppDatabase) => AppDatabase, auditInfo?: { action: string; target: string; detail: string }) => void;
+  restoreFromSavedFiles: (files: FileList | File[]) => Promise<void>;
   resetDemoData: () => void;
   clearAllDemoData: () => void;
   supabaseStatus: SupabaseSyncStatus;
@@ -382,6 +384,51 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }).catch(() => {});
       return nextCopy;
     });
+  };
+
+  const restoreFromSavedFiles = async (files: FileList | File[]) => {
+    if (!files || files.length === 0) return;
+    setIsLoading(true);
+    try {
+      const { nextDb, summary, totalRestored } = await restoreDatabaseFromSavedFiles(files, db);
+      if (totalRestored === 0) {
+        notify(
+          'Không tìm thấy bản ghi Giáo viên, Lớp học, Học viên hoặc Đăng ký học hợp lệ trong file đã chọn.',
+          'WARNING'
+        );
+        setIsLoading(false);
+        return;
+      }
+      const nowIso = new Date().toISOString();
+      nextDb.auditLogs = [
+        {
+          id: `LOG-${Date.now()}-RESTORE`,
+          timestamp: nowIso,
+          actorName: currentAccount.fullName,
+          actorRole: currentAccount.role,
+          action: 'KHÔI PHỤC DỮ LIỆU TỪ FILE ĐÃ LƯU',
+          target: `${files.length} tệp từ máy tính`,
+          detail: summary,
+        },
+        ...(nextDb.auditLogs || []),
+      ];
+      setDb(nextDb);
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(nextDb));
+        localStorage.setItem('APLUS2_LOCAL_UPDATED_AT_V1', nowIso);
+      } catch {
+        // ignore quota error
+      }
+      await pushDbToSupabase(nextDb, false);
+      notify(summary, 'SUCCESS');
+    } catch (err) {
+      notify(
+        `Lỗi đọc tệp khôi phục: ${err instanceof Error ? err.message : 'Định dạng file không hợp lệ'}`,
+        'ERROR'
+      );
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const resetDemoData = () => {
@@ -1228,6 +1275,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         notify,
         dismissToast,
         updateDb,
+        restoreFromSavedFiles,
         resetDemoData,
         clearAllDemoData,
         supabaseStatus,

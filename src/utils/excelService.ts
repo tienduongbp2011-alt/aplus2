@@ -6,6 +6,7 @@ import {
   Enrollment,
   Student,
   Teacher,
+  TuitionReceivable,
 } from '../types';
 import { formatCurrency, formatDateVN, getDayOfWeekLabel, parseToISODate } from './formatters';
 import { detectSessionConflicts } from '../services/businessLogic';
@@ -764,3 +765,525 @@ export function exportClassTuitionReminderZaloExcel(
   const fileCode = cls ? `Lop_${cls.code}_${cls.subject}` : 'Tat_Ca_Lop';
   XLSX.writeFile(wb, `Thong_Bao_Hoc_Phi_Gui_Nhom_Zalo_${fileCode}_APLUS2.xlsx`);
 }
+
+export function exportFullDatabaseWorkbookExcel(db: AppDatabase): void {
+  const wb = XLSX.utils.book_new();
+
+  // Sheet 1: Giáo viên
+  const teacherRows = db.teachers.map((t) => ({
+    'Mã giáo viên': t.code,
+    'Họ và tên': t.fullName,
+    'Trường đang công tác': t.workplace,
+    'Chuyên môn': t.specialty,
+    'Trình độ': t.qualification,
+    'Số điện thoại': t.phone,
+    Email: t.email,
+    'Nhóm giảng dạy': t.group,
+    'Mức hưởng / Đơn giá': t.group === 'VH' ? t.percentageRate : t.shiftRate,
+    'Ngày áp dụng': formatDateVN(t.effectiveDate),
+    'Trạng thái': t.status,
+    'Ghi chú': t.note,
+  }));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(teacherRows), 'Giao_Vien');
+
+  // Sheet 2: Lớp học
+  const classRows = db.classes.map((c) => ({
+    'Mã lớp': c.code,
+    'Tên lớp': c.name,
+    'Môn học': c.subject,
+    Nhóm: c.group,
+    'Khối lớp': c.grade,
+    'Mã GV': c.teacherCode,
+    'Ngày bắt đầu': formatDateVN(c.startDate),
+    'Ngày kết thúc': c.endDate ? formatDateVN(c.endDate) : '',
+    'Học phí mỗi buổi (VNĐ)': c.feePerSession,
+    'Sĩ số tối đa': c.maxStudents,
+    'Mã phòng': c.roomCode,
+    'Trạng thái': c.status,
+  }));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(classRows), 'Lop_Hoc');
+
+  // Sheet 3: Học viên
+  const studentRows = db.students.map((s) => ({
+    'Mã học viên': s.code,
+    'Họ và tên': s.fullName,
+    'Ngày sinh': formatDateVN(s.dob),
+    'Giới tính': s.gender,
+    'Trường đang học': s.school,
+    'Lớp tại trường': s.schoolClass,
+    'Họ tên phụ huynh': s.parentName,
+    'Điện thoại liên hệ': s.phone,
+    'Ngày tiếp nhận': formatDateVN(s.admissionDate),
+    'Tiền dư trả trước (VNĐ)': s.creditBalance || 0,
+    'Trạng thái': s.status,
+    'Ghi chú': s.note,
+  }));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(studentRows), 'Hoc_Vien');
+
+  // Sheet 4: Đăng ký học
+  const enrollRows = db.enrollments.map((e) => ({
+    'Mã ĐK': e.id,
+    'Mã học viên': e.studentCode,
+    'Mã lớp': e.classCode,
+    'Ngày đăng ký': formatDateVN(e.enrollmentDate),
+    'Ngày bắt đầu tính phí': formatDateVN(e.feeStartDate),
+    'Ngày kết thúc/thôi học': e.endDate ? formatDateVN(e.endDate) : '',
+    'Số buổi thực học (nếu nghỉ sớm)': e.actualAttendedSessions ?? '',
+    'Đơn giá áp dụng (VNĐ/buổi)': e.appliedFeePerSession,
+    'Miễn giảm (%)': e.discountPercent,
+    'Miễn giảm tiền (VNĐ)': e.discountAmount,
+    'Trạng thái ĐK': e.status,
+  }));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(enrollRows), 'Dang_Ky_Hoc');
+
+  XLSX.writeFile(
+    wb,
+    `Sao_Luu_Toan_Bo_APLUS2_${formatDateVN(new Date().toISOString()).replace(/\//g, '-')}.xlsx`
+  );
+}
+
+export async function restoreDatabaseFromSavedFiles(
+  files: FileList | File[],
+  currentDb: AppDatabase
+): Promise<{ nextDb: AppDatabase; summary: string; totalRestored: number }> {
+  const fileArray = Array.from(files);
+  let nextDb: AppDatabase = JSON.parse(JSON.stringify(currentDb)) as AppDatabase;
+
+  let addedTeachers = 0;
+  let addedClasses = 0;
+  let addedStudents = 0;
+  let addedEnrollments = 0;
+  let restoredFullJson = false;
+
+  const upsertTeacher = (t: Teacher) => {
+    const idx = nextDb.teachers.findIndex((x) => x.code === t.code);
+    if (idx >= 0) {
+      nextDb.teachers[idx] = { ...nextDb.teachers[idx], ...t };
+    } else {
+      nextDb.teachers.push(t);
+    }
+    addedTeachers++;
+  };
+
+  const upsertClass = (c: ClassInfo) => {
+    const idx = nextDb.classes.findIndex((x) => x.code === c.code);
+    if (idx >= 0) {
+      nextDb.classes[idx] = { ...nextDb.classes[idx], ...c };
+    } else {
+      nextDb.classes.push(c);
+    }
+    addedClasses++;
+  };
+
+  const upsertStudent = (s: Student) => {
+    const idx = nextDb.students.findIndex((x) => x.code === s.code);
+    if (idx >= 0) {
+      nextDb.students[idx] = { ...nextDb.students[idx], ...s };
+    } else {
+      nextDb.students.push(s);
+    }
+    addedStudents++;
+  };
+
+  const upsertEnrollment = (e: Enrollment) => {
+    const idx = nextDb.enrollments.findIndex(
+      (x) => x.id === e.id || (x.studentCode === e.studentCode && x.classCode === e.classCode)
+    );
+    if (idx >= 0) {
+      nextDb.enrollments[idx] = { ...nextDb.enrollments[idx], ...e };
+    } else {
+      nextDb.enrollments.push(e);
+    }
+    addedEnrollments++;
+  };
+
+  for (const file of fileArray) {
+    const lowerName = file.name.toLowerCase();
+
+    // 1. Tệp sao lưu .json
+    if (lowerName.endsWith('.json')) {
+      const text = await file.text();
+      const parsed = JSON.parse(text) as Partial<AppDatabase>;
+      if (parsed && (parsed.teachers || parsed.classes || parsed.students || parsed.settings)) {
+        nextDb = {
+          ...nextDb,
+          ...parsed,
+          settings: parsed.settings ? { ...nextDb.settings, ...parsed.settings } : nextDb.settings,
+          teachers: Array.isArray(parsed.teachers) ? parsed.teachers : nextDb.teachers,
+          classes: Array.isArray(parsed.classes) ? parsed.classes : nextDb.classes,
+          students: Array.isArray(parsed.students) ? parsed.students : nextDb.students,
+          enrollments: Array.isArray(parsed.enrollments) ? parsed.enrollments : nextDb.enrollments,
+          sessions: Array.isArray(parsed.sessions) ? parsed.sessions : nextDb.sessions,
+          attendance: Array.isArray(parsed.attendance) ? parsed.attendance : nextDb.attendance,
+          assignments: Array.isArray(parsed.assignments) ? parsed.assignments : nextDb.assignments,
+          submissions: Array.isArray(parsed.submissions) ? parsed.submissions : nextDb.submissions,
+          receivables: Array.isArray(parsed.receivables) ? parsed.receivables : nextDb.receivables,
+          receipts: Array.isArray(parsed.receipts) ? parsed.receipts : nextDb.receipts,
+          adjustments: Array.isArray(parsed.adjustments) ? parsed.adjustments : nextDb.adjustments,
+          reminders: Array.isArray(parsed.reminders) ? parsed.reminders : nextDb.reminders,
+          payrolls: Array.isArray(parsed.payrolls) ? parsed.payrolls : nextDb.payrolls,
+          cashflows: Array.isArray(parsed.cashflows) ? parsed.cashflows : nextDb.cashflows,
+          accounts:
+            Array.isArray(parsed.accounts) && parsed.accounts.length > 0
+              ? parsed.accounts
+              : nextDb.accounts,
+        };
+        restoredFullJson = true;
+        addedTeachers += nextDb.teachers.length;
+        addedClasses += nextDb.classes.length;
+        addedStudents += nextDb.students.length;
+        addedEnrollments += nextDb.enrollments.length;
+      }
+      continue;
+    }
+
+    // 2. Tệp Excel (.xlsx / .xls) đã lưu về máy
+    if (lowerName.endsWith('.xlsx') || lowerName.endsWith('.xls')) {
+      const buffer = await file.arrayBuffer();
+      const wb = XLSX.read(buffer, { type: 'array', raw: false });
+
+      for (const sheetName of wb.SheetNames) {
+        if (sheetName === 'Huong_Dan') continue;
+        const ws = wb.Sheets[sheetName];
+        const aoa = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, defval: '' });
+        if (!aoa || aoa.length === 0) continue;
+
+        // Kiểm tra xem có phải Sheet Danh sách Học sinh theo Lớp (buildClassRosterSheet) không
+        const line1 = String(aoa[1]?.[0] || '');
+        const line2 = String(aoa[2]?.[0] || '');
+        if (line1.includes('DANH SÁCH HỌC SINH LỚP:')) {
+          // Ví dụ: DANH SÁCH HỌC SINH LỚP: TOÁN 12A (TOAN12A) – MÔN HỌC: TOÁN
+          const classMatch = line1.match(/LỚP:\s*(.+?)\s*\(([^)]+)\)\s*[–-]\s*MÔN HỌC:\s*(.+)$/i);
+          const className = classMatch ? classMatch[1].trim() : sheetName;
+          const classCode = classMatch
+            ? classMatch[2].trim().toUpperCase()
+            : sheetName.replace(/[^A-Z0-9]/gi, '').toUpperCase();
+          const subject = classMatch ? classMatch[3].trim() : 'Văn hoá';
+
+          const gvCodeMatch = line2.match(/Mã GV:\s*([A-Z0-9_-]+)/i);
+          const gvNameMatch = line2.match(/Thầy\/Cô\s*([^(]+)/i);
+          const teacherCode = gvCodeMatch ? gvCodeMatch[1].trim().toUpperCase() : 'VHGV001';
+          const teacherName = gvNameMatch ? gvNameMatch[1].trim() : 'Giáo viên phụ trách';
+
+          if (!nextDb.teachers.some((t) => t.code === teacherCode)) {
+            upsertTeacher({
+              code: teacherCode,
+              fullName: teacherName,
+              workplace: 'Trung tâm APLUS 2',
+              specialty: subject,
+              qualification: 'Đại học',
+              phone: '0900000000',
+              email: '',
+              group: 'VH',
+              salaryMethod: 'PERCENTAGE_RECEIPT',
+              percentageRate: 60,
+              shiftRate: 0,
+              effectiveDate: '2026-09-01',
+              status: 'ACTIVE',
+              note: 'Khôi phục từ file danh sách lớp',
+              rateHistory: [],
+            });
+          }
+
+          if (!nextDb.classes.some((c) => c.code === classCode)) {
+            upsertClass({
+              code: classCode,
+              name: className,
+              subject,
+              group: 'VH',
+              grade: 'Khối 12',
+              teacherCode,
+              startDate: '2026-09-01',
+              endDate: '',
+              feePerSession: 50000,
+              billingMethod: 'CYCLE_8_WEEKS',
+              maxStudents: 30,
+              roomCode: 'P101',
+              recurringSchedule: [{ dayOfWeek: 1, shiftId: 'CHIEU_3', roomCode: 'P101', teacherCode }],
+              status: 'DANG_HOC',
+            });
+          }
+
+          // Dòng tiêu đề bảng ở index 6
+          for (let r = 7; r < aoa.length; r++) {
+            const row = aoa[r];
+            if (!row || row.length < 3) continue;
+            const stCode = String(row[1] || '').trim().toUpperCase();
+            const stName = String(row[2] || '').trim();
+            if (!stCode || !stName) continue;
+            const dob = parseToISODate(row[3]) || '2010-01-01';
+            const school = String(row[4] || 'THPT').trim();
+            const schoolClass = String(row[5] || '').trim();
+            const parentName = String(row[6] || 'Phụ huynh').trim();
+            const phone = normalizePhone(row[7]) || '0900000000';
+            const feeStart = parseToISODate(row[10]) || '2026-09-01';
+            const unitPrice = Number(String(row[13] || '50000').replace(/[^\d]/g, '')) || 50000;
+
+            upsertStudent({
+              code: stCode,
+              fullName: stName,
+              dob,
+              gender: 'Nam',
+              school,
+              schoolClass,
+              parentName,
+              phone,
+              admissionDate: feeStart,
+              status: 'DANG_HOC',
+              creditBalance: 0,
+              note: '',
+            });
+
+            upsertEnrollment({
+              id: `ENR-${stCode}-${classCode}`,
+              studentCode: stCode,
+              classCode,
+              enrollmentDate: feeStart,
+              feeStartDate: feeStart,
+              appliedFeePerSession: unitPrice,
+              discountPercent: 0,
+              discountAmount: 0,
+              status: 'DANG_HOC',
+            });
+          }
+          continue;
+        }
+
+        // Bảng chuẩn dạng dòng tiêu đề ở dòng đầu
+        const rawRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: '' });
+        for (const raw of rawRows) {
+          // A. Nhận diện dòng Giáo viên
+          const tCode = String(raw['Mã giáo viên (*)'] || raw['Mã giáo viên'] || '').trim().toUpperCase();
+          const tName = String(raw['Họ và tên (*)'] || raw['Họ và tên'] || '').trim();
+          const hasSpecialty =
+            'Chuyên môn (*)' in raw ||
+            'Chuyên môn' in raw ||
+            'Nhóm giảng dạy' in raw ||
+            'Nhóm giảng dạy (VH/TATT) (*)' in raw;
+
+          if (tCode && tName && hasSpecialty && !('Mã học viên' in raw) && !('Mã lớp' in raw)) {
+            const groupStr = String(
+              raw['Nhóm giảng dạy (VH/TATT) (*)'] || raw['Nhóm giảng dạy'] || 'VH'
+            ).toUpperCase();
+            const group: 'VH' | 'TATT' = groupStr.includes('TATT') || groupStr.includes('NGOẠI') ? 'TATT' : 'VH';
+            const rateRaw = Number(
+              String(
+                raw['Tỷ lệ % lương VH hoặc Đơn giá ca TATT (*)'] ||
+                  raw['Mức hưởng / Đơn giá'] ||
+                  raw['Mức lương'] ||
+                  (group === 'VH' ? 60 : 300000)
+              ).replace(/[^\d.]/g, '')
+            );
+            const effDate =
+              parseToISODate(raw['Ngày áp dụng (dd/MM/yyyy) (*)'] || raw['Ngày áp dụng']) ||
+              '2026-09-01';
+
+            upsertTeacher({
+              code: tCode,
+              fullName: tName,
+              workplace: String(raw['Trường đang công tác'] || 'Trung tâm APLUS 2').trim(),
+              specialty: String(raw['Chuyên môn (*)'] || raw['Chuyên môn'] || 'Tổng hợp').trim(),
+              qualification: String(raw['Trình độ'] || 'Đại học').trim(),
+              phone: normalizePhone(raw['Số điện thoại (*)'] || raw['Số điện thoại']) || '0900000000',
+              email: String(raw['Email'] || '').trim(),
+              group,
+              salaryMethod: group === 'VH' ? 'PERCENTAGE_RECEIPT' : 'PER_SHIFT',
+              percentageRate: group === 'VH' ? rateRaw || 60 : 0,
+              shiftRate: group === 'TATT' ? rateRaw || 300000 : 0,
+              effectiveDate: effDate,
+              status: String(raw['Trạng thái'] || '').includes('Ngừng') ? 'INACTIVE' : 'ACTIVE',
+              note: String(raw['Ghi chú'] || '').trim(),
+              rateHistory: [],
+            });
+            continue;
+          }
+
+          // B. Nhận diện dòng Lớp học
+          const cCode = String(raw['Mã lớp (*)'] || raw['Mã lớp'] || '').trim().toUpperCase();
+          const cName = String(raw['Tên lớp (*)'] || raw['Tên lớp'] || '').trim();
+          const isClassRow =
+            cCode &&
+            cName &&
+            !('Mã học viên' in raw) &&
+            !('Mã học viên (*)' in raw) &&
+            ('Môn học' in raw || 'Môn học (*)' in raw || 'Khối lớp' in raw || 'Khối lớp (*)' in raw);
+
+          if (isClassRow) {
+            const groupStr = String(raw['Nhóm (VH/TATT) (*)'] || raw['Nhóm'] || 'VH').toUpperCase();
+            const group: 'VH' | 'TATT' =
+              groupStr.includes('TATT') || groupStr.includes('NGOẠI') ? 'TATT' : 'VH';
+            const gvCode = String(
+              raw['Mã giáo viên (*)'] || raw['Mã GV'] || raw['Mã giáo viên'] || 'VHGV001'
+            )
+              .trim()
+              .toUpperCase();
+            const gvName = String(raw['Giáo viên phụ trách'] || gvCode).trim();
+
+            if (gvCode && !nextDb.teachers.some((t) => t.code === gvCode)) {
+              upsertTeacher({
+                code: gvCode,
+                fullName: gvName !== 'Chưa phân công' ? gvName : `Giáo viên ${gvCode}`,
+                workplace: 'Trung tâm APLUS 2',
+                specialty: String(raw['Môn học (*)'] || raw['Môn học'] || 'Văn hoá').trim(),
+                qualification: 'Đại học',
+                phone: '0900000000',
+                email: '',
+                group,
+                salaryMethod: group === 'VH' ? 'PERCENTAGE_RECEIPT' : 'PER_SHIFT',
+                percentageRate: group === 'VH' ? 60 : 0,
+                shiftRate: group === 'TATT' ? 300000 : 0,
+                effectiveDate: '2026-09-01',
+                status: 'ACTIVE',
+                note: 'Tự động khởi tạo khi khôi phục lớp học',
+                rateHistory: [],
+              });
+            }
+
+            const startDate =
+              parseToISODate(raw['Ngày bắt đầu (dd/MM/yyyy) (*)'] || raw['Ngày bắt đầu']) ||
+              '2026-09-01';
+            const endDate =
+              parseToISODate(raw['Ngày kết thúc (dd/MM/yyyy) (*)'] || raw['Ngày kết thúc']) || '';
+            const fee =
+              Number(
+                String(
+                  raw['Học phí mỗi buổi (VNĐ) (*)'] || raw['Học phí mỗi buổi (VNĐ)'] || '50000'
+                ).replace(/[^\d]/g, '')
+              ) || 50000;
+            const roomCode = String(raw['Mã phòng (*)'] || raw['Mã phòng'] || raw['Phòng học'] || 'P101')
+              .trim()
+              .toUpperCase();
+
+            upsertClass({
+              code: cCode,
+              name: cName,
+              subject: String(raw['Môn học (*)'] || raw['Môn học'] || cName).trim(),
+              group,
+              grade: String(raw['Khối lớp (*)'] || raw['Khối lớp'] || 'Khối 12').trim(),
+              teacherCode: gvCode,
+              startDate,
+              endDate,
+              feePerSession: fee,
+              billingMethod: 'CYCLE_8_WEEKS',
+              maxStudents: Number(raw['Sĩ số tối đa (*)'] || raw['Sĩ số tối đa'] || 25) || 25,
+              roomCode,
+              recurringSchedule: [{ dayOfWeek: 1, shiftId: 'CHIEU_3', roomCode, teacherCode: gvCode }],
+              status: 'DANG_HOC',
+            });
+            continue;
+          }
+
+          // C. Nhận diện dòng Đăng ký học
+          const enrStudentCode = String(raw['Mã học viên (*)'] || raw['Mã học viên'] || '')
+            .trim()
+            .toUpperCase();
+          const enrClassCode = String(raw['Mã lớp (*)'] || raw['Mã lớp'] || '').trim().toUpperCase();
+          if (enrStudentCode && enrClassCode) {
+            const enrollDate =
+              parseToISODate(raw['Ngày đăng ký (dd/MM/yyyy) (*)'] || raw['Ngày đăng ký']) ||
+              '2026-09-01';
+            const feeStart =
+              parseToISODate(
+                raw['Ngày bắt đầu tính phí (dd/MM/yyyy) (*)'] || raw['Ngày bắt đầu tính phí']
+              ) || enrollDate;
+            const endDate =
+              parseToISODate(raw['Ngày kết thúc/thôi học']) || undefined;
+            const unitFee =
+              Number(
+                String(
+                  raw['Đơn giá áp dụng (VNĐ/buổi) (*)'] ||
+                    raw['Đơn giá áp dụng (VNĐ/buổi)'] ||
+                    '50000'
+                ).replace(/[^\d]/g, '')
+              ) || 50000;
+
+            upsertEnrollment({
+              id: String(raw['Mã ĐK'] || `ENR-${enrStudentCode}-${enrClassCode}`),
+              studentCode: enrStudentCode,
+              classCode: enrClassCode,
+              enrollmentDate: enrollDate,
+              feeStartDate: feeStart,
+              endDate,
+              appliedFeePerSession: unitFee,
+              discountPercent: Number(raw['Miễn giảm (%)'] || 0) || 0,
+              discountAmount: Number(raw['Miễn giảm tiền (VNĐ)'] || 0) || 0,
+              status: String(raw['Trạng thái ĐK'] || 'DANG_HOC') === 'DA_NGHI' ? 'DA_NGHI' : 'DANG_HOC',
+            });
+            continue;
+          }
+
+          // D. Nhận diện dòng Học viên
+          const sCode = String(
+            raw['Mã học viên (*)'] || raw['Mã học viên'] || raw['Mã HV'] || ''
+          )
+            .trim()
+            .toUpperCase();
+          const sName = String(
+            raw['Họ và tên (*)'] || raw['Họ và tên'] || raw['Họ và tên học sinh'] || ''
+          ).trim();
+          if (sCode && sName) {
+            const dob =
+              parseToISODate(raw['Ngày sinh (dd/MM/yyyy) (*)'] || raw['Ngày sinh']) ||
+              '2010-01-01';
+            const admissionDate =
+              parseToISODate(raw['Ngày tiếp nhận (dd/MM/yyyy) (*)'] || raw['Ngày tiếp nhận']) ||
+              '2026-09-01';
+            upsertStudent({
+              code: sCode,
+              fullName: sName,
+              dob,
+              gender:
+                String(raw['Giới tính (Nam/Nữ)'] || raw['Giới tính'] || 'Nam').trim() === 'Nữ'
+                  ? 'Nữ'
+                  : 'Nam',
+              school: String(raw['Trường đang học'] || 'THPT').trim(),
+              schoolClass: String(raw['Lớp tại trường'] || '').trim(),
+              parentName: String(
+                raw['Họ tên phụ huynh (*)'] || raw['Họ tên phụ huynh'] || 'Phụ huynh'
+              ).trim(),
+              phone:
+                normalizePhone(raw['Điện thoại liên hệ (*)'] || raw['Điện thoại liên hệ']) ||
+                '0900000000',
+              admissionDate,
+              status: 'DANG_HOC',
+              creditBalance:
+                Number(String(raw['Tiền dư trả trước (VNĐ)'] || '0').replace(/[^\d]/g, '')) || 0,
+              note: String(raw['Ghi chú'] || '').trim(),
+            });
+
+            // Nếu cột "Các lớp đang học" có danh sách mã lớp (khi xuất từ Danh_Sach_Hoc_Vien_APLUS2.xlsx)
+            const enrolledClassesStr = String(raw['Các lớp đang học'] || '').trim();
+            if (enrolledClassesStr && enrolledClassesStr !== 'Chưa đăng ký lớp') {
+              const codes = enrolledClassesStr
+                .split(',')
+                .map((x) => x.trim().toUpperCase())
+                .filter(Boolean);
+              for (const clsCode of codes) {
+                const clsObj = nextDb.classes.find((c) => c.code === clsCode);
+                upsertEnrollment({
+                  id: `ENR-${sCode}-${clsCode}`,
+                  studentCode: sCode,
+                  classCode: clsCode,
+                  enrollmentDate: admissionDate,
+                  feeStartDate: admissionDate,
+                  appliedFeePerSession: clsObj?.feePerSession || 50000,
+                  discountPercent: 0,
+                  discountAmount: 0,
+                  status: 'DANG_HOC',
+                });
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  const totalRestored = addedTeachers + addedClasses + addedStudents + addedEnrollments;
+  const summary = restoredFullJson
+    ? `Đã khôi phục toàn bộ dữ liệu từ file sao lưu (${nextDb.teachers.length} GV, ${nextDb.classes.length} lớp, ${nextDb.students.length} học viên, ${nextDb.enrollments.length} đăng ký) và lưu thẳng lên Supabase!`
+    : `Đã khôi phục thành công từ file trên máy (${addedTeachers} GV, ${addedClasses} lớp, ${addedStudents} học viên, ${addedEnrollments} đăng ký) và lưu thẳng lên Supabase!`;
+
+  return { nextDb, summary, totalRestored };
+}
+

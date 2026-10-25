@@ -27,7 +27,10 @@ import {
   getRoleLabel,
   getTodayISO,
 } from '../utils/formatters';
-import { exportRowsToExcel } from '../utils/excelService';
+import {
+  exportFullDatabaseWorkbookExcel,
+  exportRowsToExcel,
+} from '../utils/excelService';
 
 export const ReportsAccountsSettingsView: React.FC<{
   mode: 'REPORTS' | 'ACCOUNTS' | 'SETTINGS';
@@ -38,6 +41,7 @@ export const ReportsAccountsSettingsView: React.FC<{
     switchAccount,
     saveSettings,
     saveUserAccount,
+    restoreFromSavedFiles,
     syncWithSupabaseNow,
     supabaseProjectUrl,
     setActiveModule,
@@ -792,6 +796,32 @@ export const ReportsAccountsSettingsView: React.FC<{
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <label
+            className="inline-flex cursor-pointer items-center gap-1.5 rounded bg-[#00543C] px-4 py-2 text-sm font-bold text-white shadow-xs hover:bg-[#008653]"
+            title="Chọn file sao lưu (.json) hoặc các file Excel (.xlsx) đã lưu về máy tính để khôi phục dữ liệu"
+          >
+            <Upload className="h-4 w-4" />
+            <span>Khôi phục từ File đã lưu về máy (.json / .xlsx)</span>
+            <input
+              type="file"
+              accept=".json,.xlsx,.xls"
+              multiple
+              onChange={(e) => {
+                if (e.target.files && e.target.files.length > 0) {
+                  void restoreFromSavedFiles(e.target.files);
+                  e.target.value = '';
+                }
+              }}
+              className="hidden"
+            />
+          </label>
+          <button
+            onClick={() => exportFullDatabaseWorkbookExcel(db)}
+            className="inline-flex items-center gap-1.5 rounded border border-[#008653] bg-white px-3.5 py-2 text-sm font-bold text-[#008653] hover:bg-[#F2FAF5]"
+          >
+            <Download className="h-4 w-4" />
+            Xuất sao lưu toàn bộ (.xlsx)
+          </button>
           <button
             onClick={handleExportFullBackupJson}
             className="inline-flex items-center gap-1.5 rounded border border-[#008653] bg-white px-3.5 py-2 text-sm font-bold text-[#008653] hover:bg-[#F2FAF5]"

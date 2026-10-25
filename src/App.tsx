@@ -92,6 +92,7 @@ const MainWorkspace: React.FC = () => {
     supabaseError,
     supabaseProjectUrl,
     syncWithSupabaseNow,
+    restoreFromSavedFiles,
   } = useApp();
 
   const [sidebarOpenMobile, setSidebarOpenMobile] = useState(false);
@@ -447,6 +448,27 @@ const MainWorkspace: React.FC = () => {
                         : 'Supabase Cloud'}
                 </span>
               </button>
+
+              {/* Nút Khôi phục dữ liệu từ File đã lưu về máy (.json hoặc .xlsx) */}
+              <label
+                className="inline-flex cursor-pointer items-center gap-1.5 rounded border border-[#00543C] bg-[#00543C] px-3 py-1.5 text-xs font-bold text-white shadow-xs hover:bg-[#008653]"
+                title="Chọn file sao lưu (.json) hoặc file Excel (.xlsx) đã lưu về máy để khôi phục dữ liệu và đồng bộ lên Supabase"
+              >
+                <Upload className="h-3.5 w-3.5" />
+                <span>Khôi phục từ File đã lưu (.json / .xlsx)</span>
+                <input
+                  type="file"
+                  accept=".json,.xlsx,.xls"
+                  multiple
+                  onChange={(e) => {
+                    if (e.target.files && e.target.files.length > 0) {
+                      void restoreFromSavedFiles(e.target.files);
+                      e.target.value = '';
+                    }
+                  }}
+                  className="hidden"
+                />
+              </label>
 
               {/* Nút Lưu dữ liệu lên Supabase ngay */}
               <button
