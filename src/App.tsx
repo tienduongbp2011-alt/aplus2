@@ -77,8 +77,6 @@ const MainWorkspace: React.FC = () => {
     db,
     isAuthenticated,
     logout,
-    clearAllDemoData,
-    resetDemoData,
     currentAccount,
     switchAccount,
     activeModule,
@@ -100,7 +98,6 @@ const MainWorkspace: React.FC = () => {
   const [globalSearch, setGlobalSearch] = useState('');
   const [showNotifPopover, setShowNotifPopover] = useState(false);
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
-  const [isClearConfirmOpen, setIsClearConfirmOpen] = useState(false);
   const [isSupabaseModalOpen, setIsSupabaseModalOpen] = useState(false);
 
   const handleQuickLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -444,21 +441,21 @@ const MainWorkspace: React.FC = () => {
                   {supabaseStatus === 'CONNECTED'
                     ? 'Supabase: Đã kết nối'
                     : supabaseStatus === 'SYNCING' || supabaseStatus === 'CONNECTING'
-                      ? 'Supabase: Đang đồng bộ...'
+                      ? 'Supabase: Đang lưu...'
                       : supabaseStatus === 'TABLE_MISSING'
                         ? 'Supabase: Cần tạo bảng SQL'
                         : 'Supabase Cloud'}
                 </span>
               </button>
 
-              {/* Nút Xoá sạch dữ liệu Demo */}
+              {/* Nút Lưu dữ liệu lên Supabase ngay */}
               <button
-                onClick={() => setIsClearConfirmOpen(true)}
-                className="inline-flex items-center gap-1.5 rounded border border-red-300 bg-red-50 px-3 py-1.5 text-xs font-bold text-red-700 hover:bg-red-100"
-                title="Xoá toàn bộ dữ liệu mẫu để nhập dữ liệu thực tế của trung tâm"
+                onClick={() => void syncWithSupabaseNow(true)}
+                className="inline-flex items-center gap-1.5 rounded bg-[#008653] px-3 py-1.5 text-xs font-bold text-white shadow-xs hover:bg-[#006B42]"
+                title="Lưu toàn bộ dữ liệu đã nhập trên màn hình lên cơ sở dữ liệu Supabase ngay lập tức"
               >
-                <Trash2 className="h-3.5 w-3.5" />
-                <span>Xóa sạch dữ liệu Demo</span>
+                <RefreshCw className="h-3.5 w-3.5" />
+                <span>Lưu lên Supabase ngay</span>
               </button>
 
               {/* Tài khoản & Cửa sổ đăng nhập theo vai trò */}
@@ -553,7 +550,7 @@ const MainWorkspace: React.FC = () => {
                 <div className="space-y-2">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <span className="font-bold text-[#00543C]">
-                      Lệnh SQL khởi tạo bảng <code>aplus2_app_state</code> trên Supabase (Chạy 1 lần duy nhất trong SQL Editor):
+                      Lệnh SQL chuẩn hoá bảng dữ liệu APLUS 2 trên Supabase:
                     </span>
                     <button
                       type="button"
@@ -608,60 +605,6 @@ const MainWorkspace: React.FC = () => {
                   >
                     <Database className="h-4 w-4" />
                     Đẩy dữ liệu hiện tại lên Supabase ngay
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Modal Xác nhận Xóa sạch dữ liệu Demo */}
-        {isClearConfirmOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4">
-            <div className="w-full max-w-lg rounded-lg border border-[#D4E8DB] bg-white shadow-2xl">
-              <div className="flex items-center justify-between bg-red-700 px-6 py-4 text-white">
-                <h3 className="text-xl font-bold">Xác nhận Xóa sạch dữ liệu Demo</h3>
-                <button onClick={() => setIsClearConfirmOpen(false)}>
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
-              <div className="space-y-4 p-6 text-sm text-[#173B2C]">
-                <p className="leading-relaxed">
-                  Bạn có muốn <strong>xóa sạch toàn bộ dữ liệu mẫu (Demo)</strong> gồm Giáo viên, Lớp học, Học viên, Đăng ký học, Lịch học, Điểm danh, Học phí và Bảng lương để <strong>bắt đầu nhập mới dữ liệu thực tế của Trung tâm APLUS 2</strong> không?
-                </p>
-                <div className="rounded border border-[#D4E8DB] bg-[#F2FAF5] p-3 text-xs">
-                  • <strong>Giữ nguyên:</strong> Cấu hình trung tâm, Logo, Hình nền đăng nhập, Danh mục Ca học, Phòng học và các Tài khoản đăng nhập (<code>giamdoc</code>, <code>giaovu</code>, <code>ketoan</code>, <code>giaovien</code>).
-                  <br />• Bạn vẫn có thể khôi phục lại dữ liệu mẫu bất cứ lúc nào nếu cần xem lại.
-                </div>
-                <div className="flex flex-wrap justify-end gap-2 pt-2">
-                  <button
-                    type="button"
-                    onClick={() => setIsClearConfirmOpen(false)}
-                    className="rounded border border-[#D4E8DB] px-4 py-2 font-bold"
-                  >
-                    Huỷ
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      resetDemoData();
-                      setIsClearConfirmOpen(false);
-                    }}
-                    className="inline-flex items-center gap-1.5 rounded border border-[#008653] bg-white px-4 py-2 font-bold text-[#008653] hover:bg-[#F2FAF5]"
-                  >
-                    <RefreshCw className="h-4 w-4" />
-                    Khôi phục dữ liệu mẫu
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      clearAllDemoData();
-                      setIsClearConfirmOpen(false);
-                    }}
-                    className="inline-flex items-center gap-1.5 rounded bg-red-600 px-5 py-2 font-bold text-white hover:bg-red-700"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                    Xác nhận Xóa sạch dữ liệu Demo
                   </button>
                 </div>
               </div>

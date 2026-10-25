@@ -215,10 +215,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const res = await saveDatabaseToSupabase(targetDb);
     if (res.ok) {
       setSupabaseStatus('CONNECTED');
-      setSupabaseLastSync(res.updatedAt || new Date().toISOString());
+      const syncTime = res.updatedAt || new Date().toISOString();
+      setSupabaseLastSync(syncTime);
+      localStorage.setItem('APLUS2_LOCAL_UPDATED_AT_V1', syncTime);
       setSupabaseError(null);
       if (showToastOnSuccess) {
-        notify('Đã đồng bộ toàn bộ dữ liệu lên Supabase thành công!', 'SUCCESS');
+        notify('Đã lưu và đồng bộ toàn bộ dữ liệu lên Supabase thành công!', 'SUCCESS');
       }
     } else {
       setSupabaseStatus(res.status);
@@ -241,6 +243,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (res.data && res.data.accounts && res.data.settings) {
         setDb(res.data);
         localStorage.setItem(STORAGE_KEY, JSON.stringify(res.data));
+        if (res.updatedAt) {
+          localStorage.setItem('APLUS2_LOCAL_UPDATED_AT_V1', res.updatedAt);
+        }
         setSupabaseStatus('CONNECTED');
         setSupabaseLastSync(res.updatedAt || new Date().toISOString());
         setSupabaseError(null);
@@ -261,19 +266,43 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const res = await fetchDatabaseFromSupabase();
       if (!isMounted) return;
       if (res.status === 'CONNECTED') {
-        if (res.data && res.data.accounts && res.data.settings) {
-          setDb(res.data);
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(res.data));
-          setSupabaseStatus('CONNECTED');
-          setSupabaseLastSync(res.updatedAt || new Date().toISOString());
-          setSupabaseError(null);
-        } else {
-          // Bảng mới tạo trên Supabase chưa có dòng dữ liệu -> đẩy dữ liệu ban đầu lên
+        const localUpdatedAt = localStorage.getItem('APLUS2_LOCAL_UPDATED_AT_V1') || '';
+        const remoteUpdatedAt = res.updatedAt || '';
+        const remoteData = res.data;
+        const remoteCount = remoteData
+          ? (remoteData.teachers?.length || 0) +
+            (remoteData.classes?.length || 0) +
+            (remoteData.students?.length || 0)
+          : 0;
+        const localCount =
+          (db.teachers?.length || 0) + (db.classes?.length || 0) + (db.students?.length || 0);
+
+        // Nếu trên Supabase chưa có dữ liệu, hoặc dữ liệu trên máy người dùng mới hơn / nhiều hơn bản rỗng -> đẩy dữ liệu trên máy lên Supabase
+        if (
+          !remoteData ||
+          !remoteData.accounts ||
+          !remoteData.settings ||
+          (remoteCount === 0 && localCount > 0) ||
+          (localUpdatedAt && remoteUpdatedAt && localUpdatedAt > remoteUpdatedAt)
+        ) {
           const saveRes = await saveDatabaseToSupabase(db);
           if (!isMounted) return;
           setSupabaseStatus(saveRes.status);
-          setSupabaseLastSync(saveRes.updatedAt || new Date().toISOString());
+          const syncTime = saveRes.updatedAt || new Date().toISOString();
+          setSupabaseLastSync(syncTime);
+          localStorage.setItem('APLUS2_LOCAL_UPDATED_AT_V1', syncTime);
           setSupabaseError(saveRes.errorMessage || null);
+        } else {
+          setDb(remoteData);
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(remoteData));
+          if (remoteUpdatedAt) {
+            localStorage.setItem('APLUS2_LOCAL_UPDATED_AT_V1', remoteUpdatedAt);
+          }
+          setSupabaseStatus('CONNECTED');
+          setSupabaseLastSync(remoteUpdatedAt || new Date().toISOString());
+          setSupabaseError(null);
+          // Đồng bộ luôn sang các bảng chi tiết trên Supabase để đảm bảo khớp 100%
+          void saveDatabaseToSupabase(remoteData);
         }
       } else {
         setSupabaseStatus(res.status);
@@ -319,10 +348,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   ) => {
     setDb((prev) => {
       const next = updater(prev);
+      const nowIso = new Date().toISOString();
       if (auditInfo) {
         const newLog: AuditLogItem = {
           id: `LOG-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
-          timestamp: new Date().toISOString(),
+          timestamp: nowIso,
           actorName: currentAccount.fullName,
           actorRole: currentAccount.role,
           action: auditInfo.action,
@@ -332,6 +362,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         next.auditLogs = [newLog, ...(next.auditLogs || [])];
       }
       const nextCopy = { ...next };
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(nextCopy));
+        localStorage.setItem('APLUS2_LOCAL_UPDATED_AT_V1', nowIso);
+      } catch {
+        // ignore quota error
+      }
       // Đồng bộ tự động lên Supabase
       void pushDbToSupabase(nextCopy, false);
       // Đồng bộ nền lên backend API nội bộ
@@ -342,7 +378,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           'x-actor-role': currentAccount.role,
           'x-actor-name': encodeURIComponent(currentAccount.fullName),
         },
-        body: JSON.stringify({ updatedAt: new Date().toISOString() }),
+        body: JSON.stringify({ updatedAt: nowIso }),
       }).catch(() => {});
       return nextCopy;
     });

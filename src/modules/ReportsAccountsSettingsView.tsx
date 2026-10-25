@@ -38,8 +38,8 @@ export const ReportsAccountsSettingsView: React.FC<{
     switchAccount,
     saveSettings,
     saveUserAccount,
-    resetDemoData,
-    clearAllDemoData,
+    syncWithSupabaseNow,
+    supabaseProjectUrl,
     setActiveModule,
     notify,
   } = useApp();
@@ -800,18 +800,11 @@ export const ReportsAccountsSettingsView: React.FC<{
             Xuất sao lưu trình duyệt (.json)
           </button>
           <button
-            onClick={clearAllDemoData}
-            className="inline-flex items-center gap-1.5 rounded border border-red-600 bg-red-50 px-3.5 py-2 text-sm font-bold text-red-700 hover:bg-red-100"
+            onClick={() => void syncWithSupabaseNow(true)}
+            className="inline-flex items-center gap-1.5 rounded border border-[#00543C] bg-[#F2FAF5] px-3.5 py-2 text-sm font-bold text-[#00543C] hover:bg-[#D4E8DB]/60"
           >
-            <Trash2 className="h-4 w-4" />
-            Xóa sạch dữ liệu Demo (Nhập mới từ đầu)
-          </button>
-          <button
-            onClick={resetDemoData}
-            className="inline-flex items-center gap-1.5 rounded border border-amber-600 bg-white px-3.5 py-2 text-sm font-bold text-amber-700 hover:bg-amber-50"
-          >
-            <RefreshCw className="h-4 w-4" />
-            Khôi phục dữ liệu minh hoạ gốc
+            <RefreshCw className="h-4 w-4 text-[#008653]" />
+            Đồng bộ & Lưu dữ liệu lên Supabase ngay
           </button>
           <button
             onClick={() => saveSettings(settingsForm)}
@@ -1102,13 +1095,14 @@ export const ReportsAccountsSettingsView: React.FC<{
               className="mt-1 w-full rounded border border-[#D4E8DB] px-3 py-2 text-xs"
             />
           </div>
-          <div className="rounded border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950">
-            <div className="font-bold">Phạm vi lưu trữ & Hướng dẫn sao lưu / triển khai:</div>
+          <div className="rounded border border-[#D4E8DB] bg-[#F2FAF5] p-3 text-xs text-[#173B2C]">
+            <div className="font-bold text-[#00543C]">Trạng thái kết nối Cơ sở dữ liệu Supabase:</div>
             <p className="mt-1">
-              • Hiện tại ứng dụng đang chạy ở <strong>“Chế độ demo – dữ liệu lưu trên thiết bị này”</strong> (LocalStorage kết hợp API Express nội bộ). Tệp sao lưu .json xuất ra chứa toàn bộ dữ liệu trên trình duyệt hiện tại.
+              • Hệ thống đang kết nối và tự động lưu dữ liệu trực tiếp lên dự án Supabase:{' '}
+              <strong>{supabaseProjectUrl}</strong>.
             </p>
             <p className="mt-1">
-              • Để triển khai nhiều người dùng trên môi trường thực tế: cấu hình biến <code>DATABASE_URL</code> (PostgreSQL) và <code>JWT_SECRET</code> trong tệp <code>.env</code> theo mẫu <code>.env.example</code>.
+              • Mọi thao tác thêm/sửa Giáo viên, Lớp học, Học viên, Đăng ký học, Học phí, Lương giáo viên đều được đồng bộ tự động vào các bảng trên Supabase.
             </p>
           </div>
         </div>
