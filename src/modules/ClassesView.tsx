@@ -200,6 +200,34 @@ export const ClassesView: React.FC = () => {
     setStopReasonInput(enr.stopReason || 'Xin nghỉ bất ưng trước khi kết thúc khoá học');
   };
 
+  const handleStopDateChange = (newDate: string) => {
+    setStopDateInput(newDate);
+    if (!stopEnrollTarget) return;
+    const count = db.sessions.filter(
+      (s) =>
+        s.classCode === stopEnrollTarget.classCode &&
+        s.date >= stopEnrollTarget.feeStartDate &&
+        s.date <= newDate &&
+        (s.status === 'DA_DAY' || s.status === 'DU_KIEN')
+    ).length;
+    if (count > 0) {
+      setStopSessionsInput(count);
+    }
+  };
+
+  const handleConfirmStopSettlement = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!stopEnrollTarget) return;
+    settleEarlyWithdrawalEnrollment({
+      enrollmentId: stopEnrollTarget.id,
+      stopDate: stopDateInput,
+      attendedSessions: stopSessionsInput,
+      unitPrice: stopUnitPriceInput,
+      stopReason: stopReasonInput,
+    });
+    setStopEnrollTarget(null);
+  };
+
   const handleQuickEnroll = () => {
     if (!selectedClass) return;
     if (!selectedClass.code || !selectedClass.teacherCode) {
@@ -693,7 +721,7 @@ export const ClassesView: React.FC = () => {
                     <input
                       type="date"
                       required
-                      value={stopDate}
+                      value={stopDateInput}
                       onChange={(e) => handleStopDateChange(e.target.value)}
                       className="mt-1 w-full rounded border border-[#D4E8DB] px-3 py-2 font-bold"
                     />
@@ -705,8 +733,8 @@ export const ClassesView: React.FC = () => {
                       min={0}
                       max={100}
                       required
-                      value={stopSessionCount}
-                      onChange={(e) => setStopSessionCount(Math.max(0, Number(e.target.value)))}
+                      value={stopSessionsInput}
+                      onChange={(e) => setStopSessionsInput(Math.max(0, Number(e.target.value)))}
                       className="mt-1 w-full rounded border border-[#008653] px-3 py-2 font-bold text-[#00543C] tabular-nums"
                     />
                   </div>
@@ -719,8 +747,8 @@ export const ClassesView: React.FC = () => {
                       min={0}
                       step={5000}
                       required
-                      value={stopUnitPrice}
-                      onChange={(e) => setStopUnitPrice(Math.max(0, Number(e.target.value)))}
+                      value={stopUnitPriceInput}
+                      onChange={(e) => setStopUnitPriceInput(Math.max(0, Number(e.target.value)))}
                       className="mt-1 w-full rounded border border-[#D4E8DB] px-3 py-2 font-bold tabular-nums"
                     />
                   </div>
@@ -730,8 +758,8 @@ export const ClassesView: React.FC = () => {
                   <label className="block font-bold">Lý do xin nghỉ</label>
                   <input
                     type="text"
-                    value={stopReason}
-                    onChange={(e) => setStopReason(e.target.value)}
+                    value={stopReasonInput}
+                    onChange={(e) => setStopReasonInput(e.target.value)}
                     placeholder="VD: Học viên xin nghỉ bất ưng vì lý do gia đình / trùng lịch..."
                     className="mt-1 w-full rounded border border-[#D4E8DB] px-3 py-2"
                   />
@@ -740,10 +768,10 @@ export const ClassesView: React.FC = () => {
                 <div className="rounded-lg border-2 border-[#008653] bg-[#F2FAF5] p-4">
                   <div className="flex items-center justify-between text-sm">
                     <span className="font-bold text-[#173B2C]">
-                      Thành tiền chốt thu ({stopSessionCount} buổi × {formatCurrency(stopUnitPrice)}):
+                      Thành tiền chốt thu ({stopSessionsInput} buổi × {formatCurrency(stopUnitPriceInput)}):
                     </span>
                     <span className="text-xl font-bold text-[#008653] tabular-nums">
-                      {formatCurrency(stopSessionCount * stopUnitPrice)}
+                      {formatCurrency(stopSessionsInput * stopUnitPriceInput)}
                     </span>
                   </div>
                 </div>

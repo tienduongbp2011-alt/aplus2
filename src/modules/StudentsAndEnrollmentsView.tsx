@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   CheckSquare,
   Download,
   Edit2,
@@ -8,6 +9,7 @@ import {
   LogOut,
   Plus,
   Search,
+  Trash2,
   UserPlus,
   X,
 } from 'lucide-react';
@@ -33,6 +35,8 @@ export const StudentsAndEnrollmentsView: React.FC<{ mode: 'STUDENTS' | 'ENROLLME
   const {
     db,
     saveStudent,
+    deleteStudent,
+    deleteUnenrolledStudents,
     saveEnrollment,
     saveEnrollmentsBatch,
     settleEarlyWithdrawalEnrollment,
@@ -60,7 +64,68 @@ export const StudentsAndEnrollmentsView: React.FC<{ mode: 'STUDENTS' | 'ENROLLME
   const [stopUnitPrice, setStopUnitPrice] = useState(50000);
   const [stopReason, setStopReason] = useState('Học viên xin nghỉ giữa khoá');
 
+  // Modal Xoá học sinh chưa đăng ký môn nào (load sang phân hệ đăng ký học)
+  const [isDeleteUnenrolledModalOpen, setIsDeleteUnenrolledModalOpen] = useState(false);
+  const [selectedUnenrolledCodes, setSelectedUnenrolledCodes] = useState<string[]>([]);
+  const [singleDeleteStudent, setSingleDeleteStudent] = useState<Student | null>(null);
+
   const [isImportOpen, setIsImportOpen] = useState(false);
+
+  // Danh sách học sinh không đăng ký học bất kỳ môn nào (0 lớp đang học)
+  const unenrolledStudents = useMemo(() => {
+    return db.students.filter((s) => {
+      const activeEnrolls = db.enrollments.filter(
+        (e) => e.studentCode === s.code && e.status === 'DANG_HOC'
+      );
+      return activeEnrolls.length === 0;
+    });
+  }, [db.students, db.enrollments]);
+
+  const handleOpenDeleteUnenrolledModal = () => {
+    if (unenrolledStudents.length === 0) {
+      notify(
+        'Hiện tại tất cả học viên trong danh sách đều đã đăng ký lớp học. Không có học sinh nào chưa đăng ký.',
+        'WARNING'
+      );
+      return;
+    }
+    // Mặc định chọn tất cả học sinh chưa đăng ký
+    setSelectedUnenrolledCodes(unenrolledStudents.map((s) => s.code));
+    setIsDeleteUnenrolledModalOpen(true);
+  };
+
+  const toggleSelectUnenrolled = (code: string) => {
+    setSelectedUnenrolledCodes((prev) =>
+      prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]
+    );
+  };
+
+  const toggleSelectAllUnenrolled = () => {
+    if (selectedUnenrolledCodes.length === unenrolledStudents.length) {
+      setSelectedUnenrolledCodes([]);
+    } else {
+      setSelectedUnenrolledCodes(unenrolledStudents.map((s) => s.code));
+    }
+  };
+
+  const handleConfirmBatchDelete = () => {
+    if (selectedUnenrolledCodes.length === 0) {
+      notify('Vui lòng tích chọn ít nhất 1 học sinh cần xoá.', 'WARNING');
+      return;
+    }
+    const count = deleteUnenrolledStudents(selectedUnenrolledCodes);
+    if (count > 0) {
+      setIsDeleteUnenrolledModalOpen(false);
+    }
+  };
+
+  const handleConfirmSingleDelete = () => {
+    if (!singleDeleteStudent) return;
+    const ok = deleteStudent(singleDeleteStudent.code);
+    if (ok) {
+      setSingleDeleteStudent(null);
+    }
+  };
 
   const emptyStudent: Student = {
     code: '',
@@ -97,7 +162,14 @@ export const StudentsAndEnrollmentsView: React.FC<{ mode: 'STUDENTS' | 'ENROLLME
 
   const filteredStudents = useMemo(() => {
     return db.students.filter((s) => {
-      if (statusFilter !== 'ALL' && s.status !== statusFilter) return false;
+      if (statusFilter === 'CHUA_DANG_KY_LOP') {
+        const inAny = db.enrollments.some(
+          (e) => e.studentCode === s.code && e.status === 'DANG_HOC'
+        );
+        if (inAny) return false;
+      } else if (statusFilter !== 'ALL' && s.status !== statusFilter) {
+        return false;
+      }
       if (classFilter !== 'ALL') {
         const inClass = db.enrollments.some(
           (e) => e.studentCode === s.code && e.classCode === classFilter
@@ -167,7 +239,7 @@ export const StudentsAndEnrollmentsView: React.FC<{ mode: 'STUDENTS' | 'ENROLLME
       db.classes.find(
         (c) =>
           Boolean(c.code) &&
-          (Boolean(c.teacherCode) || (c.scheduleItems && c.scheduleItems.some((i) => i.teacherCode)))
+          (Boolean(c.teacherCode) || (c.recurringSchedule && c.recurringSchedule.some((i) => i.teacherCode)))
       ) || db.classes[0];
     const targetStudent = preselectStudentCode || db.students[0]?.code || '';
     setEnrollForm({
@@ -275,7 +347,7 @@ export const StudentsAndEnrollmentsView: React.FC<{ mode: 'STUDENTS' | 'ENROLLME
       stopDate,
       attendedSessions: stopSessionCount,
       unitPrice: stopUnitPrice,
-      reason: stopReason,
+      stopReason,
     });
     setStopEnrollTarget(null);
   };
@@ -392,6 +464,15 @@ export const StudentsAndEnrollmentsView: React.FC<{ mode: 'STUDENTS' | 'ENROLLME
             Nhập Excel (.xlsx)
           </button>
 
+          <button
+            onClick={handleOpenDeleteUnenrolledModal}
+            className="inline-flex items-center gap-1.5 rounded border border-red-300 bg-red-50 px-3.5 py-2 text-sm font-bold text-red-700 hover:bg-red-100"
+            title="Xoá những học sinh không đăng ký học bất kỳ môn nào khỏi danh sách học viên load sang phân hệ đăng ký học"
+          >
+            <Trash2 className="h-4 w-4 text-red-600" />
+            <span>Xoá HS chưa đăng ký học ({unenrolledStudents.length})</span>
+          </button>
+
           {mode === 'ENROLLMENTS' && (
             <button
               onClick={handleExportSelectedClassRoster}
@@ -466,6 +547,9 @@ export const StudentsAndEnrollmentsView: React.FC<{ mode: 'STUDENTS' | 'ENROLLME
             <option value="DANG_HOC">Đang học</option>
             {mode === 'STUDENTS' ? (
               <>
+                <option value="CHUA_DANG_KY_LOP">
+                  Chưa đăng ký môn nào ({unenrolledStudents.length})
+                </option>
                 <option value="TAM_NGHI">Tạm nghỉ</option>
                 <option value="THOI_HOC">Thôi học</option>
               </>
@@ -578,6 +662,15 @@ export const StudentsAndEnrollmentsView: React.FC<{ mode: 'STUDENTS' | 'ENROLLME
                         >
                           <Edit2 className="h-4 w-4" />
                         </button>
+                        {stEnrolls.length === 0 && (
+                          <button
+                            onClick={() => setSingleDeleteStudent(s)}
+                            title="Xoá học viên này (do chưa đăng ký môn học nào)"
+                            className="rounded border border-red-200 p-1.5 text-red-600 hover:bg-red-50"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -945,7 +1038,23 @@ export const StudentsAndEnrollmentsView: React.FC<{ mode: 'STUDENTS' | 'ENROLLME
             </div>
             <form onSubmit={handleEnrollSubmit} className="space-y-4 p-6">
               <div>
-                <label className="block text-sm font-bold">Chọn Học viên *</label>
+                <div className="flex flex-wrap items-center justify-between gap-1">
+                  <label className="block text-sm font-bold">Chọn Học viên *</label>
+                  {unenrolledStudents.length > 0 && !isEditEnroll && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsEnrollModalOpen(false);
+                        handleOpenDeleteUnenrolledModal();
+                      }}
+                      className="inline-flex items-center gap-1 text-xs font-bold text-red-600 hover:underline"
+                      title="Bấm để xoá các học sinh chưa đăng ký môn nào ra khỏi danh sách này"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                      <span>Xoá {unenrolledStudents.length} HS chưa đăng ký môn nào</span>
+                    </button>
+                  )}
+                </div>
                 <select
                   required
                   disabled={isEditEnroll}
@@ -955,11 +1064,16 @@ export const StudentsAndEnrollmentsView: React.FC<{ mode: 'STUDENTS' | 'ENROLLME
                   }
                   className="mt-1 w-full rounded border border-[#D4E8DB] px-3 py-2 font-bold"
                 >
-                  {db.students.map((s) => (
-                    <option key={s.code} value={s.code}>
-                      {s.code} – {s.fullName} (Trường {s.school} – Lớp {s.schoolClass})
-                    </option>
-                  ))}
+                  {db.students.map((s) => {
+                    const hasEnrolls = db.enrollments.some(
+                      (e) => e.studentCode === s.code && e.status === 'DANG_HOC'
+                    );
+                    return (
+                      <option key={s.code} value={s.code}>
+                        {s.code} – {s.fullName} ({hasEnrolls ? 'Đã có lớp' : 'Chưa có lớp'}) – Trường {s.school} (Lớp {s.schoolClass})
+                      </option>
+                    );
+                  })}
                 </select>
               </div>
 
@@ -1509,6 +1623,197 @@ export const StudentsAndEnrollmentsView: React.FC<{ mode: 'STUDENTS' | 'ENROLLME
                   </table>
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal xác nhận xoá hàng loạt học sinh chưa đăng ký môn nào */}
+      {isDeleteUnenrolledModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-xs">
+          <div className="flex max-h-[90vh] w-full max-w-4xl flex-col rounded-xl bg-white shadow-2xl">
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-red-200 bg-red-50 px-6 py-4 rounded-t-xl">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-red-100 text-red-600">
+                  <AlertTriangle className="h-6 w-6" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-red-900">
+                    Xác nhận xoá học viên chưa đăng ký môn học
+                  </h3>
+                  <p className="text-sm text-red-700">
+                    Tìm thấy {unenrolledStudents.length} học viên chưa đăng ký môn học nào. Bạn có thể chọn cụ thể học viên để xoá.
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsDeleteUnenrolledModalOpen(false)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X className="h-6 w-6" />
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="flex-1 overflow-y-auto p-6 space-y-4">
+              <div className="rounded-lg bg-amber-50 p-3 text-xs text-amber-800 border border-amber-200">
+                <strong>Lưu ý an toàn:</strong> Chức năng này chỉ cho phép xoá các học sinh <strong>hoàn toàn chưa đăng ký môn học nào</strong>. Những học sinh đang tham gia lớp hoặc còn tồn tại công nợ sẽ được bảo vệ tuyệt đối và không thể xoá tại đây.
+              </div>
+
+              {unenrolledStudents.length === 0 ? (
+                <div className="p-8 text-center text-gray-500">
+                  Tuyệt vời! Hiện tại không có học viên nào chưa đăng ký môn học.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between py-2 border-b border-[#D4E8DB]">
+                    <label className="flex items-center gap-2 font-bold cursor-pointer text-sm text-[#00543C]">
+                      <input
+                        type="checkbox"
+                        checked={
+                          unenrolledStudents.length > 0 &&
+                          selectedUnenrolledCodes.length === unenrolledStudents.length
+                        }
+                        onChange={toggleSelectAllUnenrolled}
+                        className="rounded text-[#008653] focus:ring-[#008653] h-4 w-4"
+                      />
+                      Chọn tất cả ({selectedUnenrolledCodes.length}/{unenrolledStudents.length})
+                    </label>
+                    <span className="text-xs text-gray-500">
+                      Đã chọn: <strong className="text-red-600">{selectedUnenrolledCodes.length}</strong> học viên
+                    </span>
+                  </div>
+
+                  <div className="max-h-96 overflow-y-auto rounded border border-[#D4E8DB]">
+                    <table className="w-full border-collapse text-left text-sm">
+                      <thead className="bg-[#F2FAF5] sticky top-0 border-b border-[#D4E8DB]">
+                        <tr>
+                          <th className="p-2.5 w-10 text-center">#</th>
+                          <th className="p-2.5">Mã HV</th>
+                          <th className="p-2.5">Họ và tên</th>
+                          <th className="p-2.5">Số điện thoại</th>
+                          <th className="p-2.5">Lớp / Trường</th>
+                          <th className="p-2.5">Phụ huynh</th>
+                          <th className="p-2.5 text-center">Trạng thái</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#D4E8DB]">
+                        {unenrolledStudents.map((st) => {
+                          const isSelected = selectedUnenrolledCodes.includes(st.code);
+                          return (
+                            <tr
+                              key={st.code}
+                              onClick={() => toggleSelectUnenrolled(st.code)}
+                              className={`cursor-pointer transition-colors ${
+                                isSelected ? 'bg-red-50/60' : 'hover:bg-gray-50'
+                              }`}
+                            >
+                              <td className="p-2.5 text-center" onClick={(e) => e.stopPropagation()}>
+                                <input
+                                  type="checkbox"
+                                  checked={isSelected}
+                                  onChange={() => toggleSelectUnenrolled(st.code)}
+                                  className="rounded text-[#008653] focus:ring-[#008653] h-4 w-4"
+                                />
+                              </td>
+                              <td className="p-2.5 font-bold text-gray-900">{st.code}</td>
+                              <td className="p-2.5 font-bold text-[#00543C]">{st.fullName}</td>
+                              <td className="p-2.5 tabular-nums text-gray-600">{st.phone || '—'}</td>
+                              <td className="p-2.5 text-gray-700">{st.schoolClass} – {st.school || '—'}</td>
+                              <td className="p-2.5 text-gray-600 truncate max-w-[150px]">{st.parentName || '—'}</td>
+                              <td className="p-2.5 text-center">
+                                <span className="inline-block px-2 py-0.5 rounded text-xs font-semibold bg-amber-100 text-amber-800">
+                                  0 môn đăng ký
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="flex items-center justify-between border-t border-gray-200 bg-gray-50 px-6 py-4 rounded-b-xl">
+              <span className="text-xs text-gray-500">
+                Tài khoản đăng nhập của các học sinh được xoá cũng sẽ được dọn dẹp tương ứng.
+              </span>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setIsDeleteUnenrolledModalOpen(false)}
+                  className="rounded-lg border border-gray-300 bg-white px-4 py-2 font-bold text-gray-700 hover:bg-gray-100"
+                >
+                  Huỷ bỏ
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmBatchDelete}
+                  disabled={selectedUnenrolledCodes.length === 0}
+                  className="flex items-center gap-2 rounded-lg bg-red-600 px-5 py-2 font-bold text-white shadow-sm hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  Xác nhận xoá ({selectedUnenrolledCodes.length}) học viên
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal xác nhận xoá 1 học sinh chưa đăng ký */}
+      {singleDeleteStudent && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-md rounded-xl bg-white shadow-2xl p-6 space-y-4">
+            <div className="flex items-center gap-3 text-red-600">
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-red-100">
+                <AlertTriangle className="h-6 w-6" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-gray-900">Xác nhận xoá học viên</h3>
+                <p className="text-xs text-gray-500">Hành động này không thể hoàn tác</p>
+              </div>
+            </div>
+
+            <div className="rounded-lg bg-gray-50 p-4 space-y-2 border border-gray-200 text-sm">
+              <div className="flex justify-between">
+                <span className="text-gray-500">Mã học viên:</span>
+                <span className="font-bold">{singleDeleteStudent.code}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">Họ và tên:</span>
+                <span className="font-bold text-[#00543C]">{singleDeleteStudent.fullName}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">Trạng thái:</span>
+                <span className="font-semibold text-amber-700">Chưa đăng ký môn học nào</span>
+              </div>
+            </div>
+
+            <p className="text-xs text-gray-500">
+              Hệ thống sẽ xoá thông tin học viên và tài khoản người dùng tương ứng trên cơ sở dữ liệu.
+            </p>
+
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setSingleDeleteStudent(null)}
+                className="rounded-lg border border-gray-300 bg-white px-4 py-2 font-bold text-gray-700 hover:bg-gray-100"
+              >
+                Huỷ bỏ
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmSingleDelete}
+                className="flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 font-bold text-white hover:bg-red-700"
+              >
+                <Trash2 className="h-4 w-4" />
+                Xác nhận xoá
+              </button>
             </div>
           </div>
         </div>

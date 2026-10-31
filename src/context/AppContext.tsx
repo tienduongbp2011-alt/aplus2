@@ -76,6 +76,8 @@ interface AppContextValue {
   toggleTeacherActive: (code: string) => void;
   saveClass: (cls: ClassInfo, isEdit: boolean) => boolean;
   saveStudent: (student: Student, isEdit: boolean) => boolean;
+  deleteStudent: (code: string) => boolean;
+  deleteUnenrolledStudents: (targetCodes?: string[]) => number;
   saveEnrollment: (enrollment: Enrollment, isEdit: boolean) => boolean;
   saveEnrollmentsBatch: (enrollments: Enrollment[]) => number;
   settleEarlyWithdrawalEnrollment: (params: {
@@ -609,6 +611,108 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
     notify(isEdit ? 'Đã cập nhật hồ sơ học viên.' : 'Đã lưu hồ sơ học viên thành công.');
     return true;
+  };
+
+  const deleteStudent = (code: string): boolean => {
+    const student = db.students.find((s) => s.code === code);
+    if (!student) return false;
+    const activeEnrolls = db.enrollments.filter(
+      (e) => e.studentCode === code && e.status === 'DANG_HOC'
+    );
+    if (activeEnrolls.length > 0) {
+      notify(
+        `Học viên ${student.fullName} (${code}) đang có ${activeEnrolls.length} lớp đang học. Không thể xoá khi đang có đăng ký học.`,
+        'ERROR'
+      );
+      return false;
+    }
+    const hasDebt = db.receivables.some(
+      (r) => r.studentCode === code && r.remainingDebt > 0
+    );
+    if (hasDebt) {
+      notify(
+        `Học viên ${student.fullName} (${code}) đang còn công nợ học phí chưa thanh toán, không thể xoá.`,
+        'ERROR'
+      );
+      return false;
+    }
+
+    updateDb(
+      (prev) => ({
+        ...prev,
+        students: prev.students.filter((s) => s.code !== code),
+        enrollments: prev.enrollments.filter((e) => e.studentCode !== code),
+        accounts: prev.accounts.filter((a) => a.linkedStudentCode !== code),
+      }),
+      {
+        action: 'XOÁ HỒ SƠ HỌC VIÊN',
+        target: `${code} - ${student.fullName}`,
+        detail: 'Đã xoá học viên do không có lớp học nào đang hoạt động.',
+      }
+    );
+
+    if (supabase) {
+      Promise.resolve(
+        supabase.from('students').delete().or(`code.eq.${code},id.eq.${code}`)
+      ).catch(() => {});
+    }
+
+    if (selectedStudentCodeForDetail === code) {
+      setSelectedStudentCodeForDetail(null);
+    }
+
+    notify(`Đã xoá học viên ${student.fullName} (${code}) thành công.`);
+    return true;
+  };
+
+  const deleteUnenrolledStudents = (targetCodes?: string[]): number => {
+    const unenrolled = db.students.filter((s) => {
+      if (targetCodes && targetCodes.length > 0 && !targetCodes.includes(s.code)) {
+        return false;
+      }
+      const hasActiveEnroll = db.enrollments.some(
+        (e) => e.studentCode === s.code && e.status === 'DANG_HOC'
+      );
+      return !hasActiveEnroll;
+    });
+
+    if (unenrolled.length === 0) {
+      notify('Không tìm thấy học sinh nào chưa đăng ký học để xoá.', 'WARNING');
+      return 0;
+    }
+
+    const deletedCodes = unenrolled.map((s) => s.code);
+    const codeSet = new Set(deletedCodes);
+
+    updateDb(
+      (prev) => ({
+        ...prev,
+        students: prev.students.filter((s) => !codeSet.has(s.code)),
+        enrollments: prev.enrollments.filter((e) => !codeSet.has(e.studentCode)),
+        accounts: prev.accounts.filter(
+          (a) => !a.linkedStudentCode || !codeSet.has(a.linkedStudentCode)
+        ),
+      }),
+      {
+        action: 'XOÁ HỌC SINH KHÔNG ĐĂNG KÝ HỌC',
+        target: `${deletedCodes.length} học viên`,
+        detail: `Đã xoá các mã: ${deletedCodes.join(', ')} do không đăng ký bất kỳ môn nào.`,
+      }
+    );
+
+    if (supabase) {
+      Promise.resolve(supabase.from('students').delete().in('code', deletedCodes)).catch(() => {});
+      Promise.resolve(supabase.from('students').delete().in('id', deletedCodes)).catch(() => {});
+    }
+
+    if (selectedStudentCodeForDetail && codeSet.has(selectedStudentCodeForDetail)) {
+      setSelectedStudentCodeForDetail(null);
+    }
+
+    notify(
+      `Đã xoá thành công ${deletedCodes.length} học sinh không đăng ký học bất kỳ môn nào khỏi danh sách học viên và phân hệ đăng ký học!`
+    );
+    return deletedCodes.length;
   };
 
   const saveEnrollment = (enrollment: Enrollment, isEdit: boolean): boolean => {
@@ -1293,6 +1397,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         toggleTeacherActive,
         saveClass,
         saveStudent,
+        deleteStudent,
+        deleteUnenrolledStudents,
         saveEnrollment,
         saveEnrollmentsBatch,
         settleEarlyWithdrawalEnrollment,

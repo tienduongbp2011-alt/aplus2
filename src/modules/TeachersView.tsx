@@ -686,8 +686,8 @@ export const TeachersView: React.FC = () => {
                               <td className="p-2.5 tabular-nums">{formatCurrency(c.feePerSession)}/buổi</td>
                               <td className="p-2.5 font-bold text-[#008653]">
                                 {detailTeacher.group === 'VH'
-                                  ? `${effectiveRate.percentageRate}% học phí thực thu`
-                                  : `${formatCurrency(effectiveRate.shiftRate)}/ca thực dạy`}
+                                  ? `${effectiveRate}% học phí thực thu`
+                                  : `${formatCurrency(effectiveRate)}/ca thực dạy`}
                               </td>
                             </tr>
                           );

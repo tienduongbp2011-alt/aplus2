@@ -314,8 +314,8 @@ export function buildTuitionReceivable(params: {
  */
 export function getEffectiveTeacherRate(
   teacher: Teacher,
-  cls: ClassInfo | undefined,
-  targetDate: string
+  cls?: ClassInfo,
+  targetDate: string = getTodayISO()
 ): number {
   // 1. Nếu lớp có thiết lập đơn giá ca riêng cho GV này trong coTeacherAssignments
   if (cls && teacher.group === 'TATT' && cls.coTeacherAssignments) {
