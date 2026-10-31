@@ -67,18 +67,82 @@ export const TuitionAndRemindersView: React.FC<{
   const [periodEnd, setPeriodEnd] = useState('2026-11-30');
   const [dueDate, setDueDate] = useState('2026-11-10');
 
-  // Modal lập phiếu thu (phân bổ nhiều khoản phải thu, ưu tiên nợ cũ)
+  // Modal lập phiếu thu (chọn Lớp -> chọn Học viên -> chọn Đợt thu tự động tính tiền)
   const [isReceiptModalOpen, setIsReceiptModalOpen] = useState(false);
-  const [receiptStudentCode, setReceiptStudentCode] = useState(
-    db.students[1]?.code || 'HV002'
+  const [receiptClassCode, setReceiptClassCode] = useState(
+    db.classes[0]?.code || 'TOAN12A'
   );
+  const [receiptStudentCode, setReceiptStudentCode] = useState(
+    db.students[0]?.code || 'HV013'
+  );
+  const [receiptPayerName, setReceiptPayerName] = useState('');
+  const [receiptCycleMode, setReceiptCycleMode] = useState<'CUSTOM' | 'EXISTING'>('CUSTOM');
+  const [receiptSelectedRecId, setReceiptSelectedRecId] = useState('');
+  const [customCycleName, setCustomCycleName] = useState('Đợt 1 (06/07/2026 - 07/08/2026)');
+  const [customPeriodStart, setCustomPeriodStart] = useState('2026-07-06');
+  const [customPeriodEnd, setCustomPeriodEnd] = useState('2026-08-07');
+  const [customShiftsPerWeek, setCustomShiftsPerWeek] = useState(2);
+  const [customFeePerSession, setCustomFeePerSession] = useState(50000);
   const [receiptDate, setReceiptDate] = useState(getTodayISO());
-  const [receiptAmount, setReceiptAmount] = useState<number>(300000);
+  const [receiptAmount, setReceiptAmount] = useState<number>(500000);
   const [receiptMethod, setReceiptMethod] = useState<'TM' | 'CK'>('CK');
   const [receiptContent, setReceiptContent] = useState(
-    'Thu học phí bổ sung theo kỳ thu'
+    'Thu học phí Đợt 1 (06/07/2026 - 07/08/2026) - Lớp TOAN12A (10 buổi)'
   );
   const [manualAllocations, setManualAllocations] = useState<Record<string, number>>({});
+
+  // 1. Lớp học đang chọn trong modal lập phiếu thu
+  const selectedReceiptClass = useMemo(() => {
+    return db.classes.find((c) => c.code === receiptClassCode) || db.classes[0];
+  }, [db.classes, receiptClassCode]);
+
+  // 2. Danh sách học viên đang theo học đúng lớp đã chọn
+  const studentsInReceiptClass = useMemo(() => {
+    if (!receiptClassCode) return [];
+    const enrs = db.enrollments.filter(
+      (e) => e.classCode === receiptClassCode && e.status === 'DANG_HOC'
+    );
+    const codeSet = new Set(enrs.map((e) => e.studentCode));
+    const list = db.students.filter((s) => codeSet.has(s.code));
+    return list.length > 0 ? list : db.students;
+  }, [db.enrollments, db.students, receiptClassCode]);
+
+  // 3. Học viên đang chọn
+  const selectedReceiptStudent = useMemo(() => {
+    return db.students.find((s) => s.code === receiptStudentCode);
+  }, [db.students, receiptStudentCode]);
+
+  // 4. Các đợt thu học phí có sẵn còn nợ của học viên trong lớp đã chọn
+  const availableReceivablesInClass = useMemo(() => {
+    return db.receivables.filter(
+      (r) =>
+        r.studentCode === receiptStudentCode &&
+        (receiptClassCode ? r.classCode === receiptClassCode : true) &&
+        r.remainingDebt > 0
+    );
+  }, [db.receivables, receiptStudentCode, receiptClassCode]);
+
+  // 5. Tự động tính số ngày, số tuần, số ca học và tổng học phí
+  const calcDays = useMemo(() => {
+    if (!customPeriodStart || !customPeriodEnd) return 0;
+    const d1 = new Date(customPeriodStart).getTime();
+    const d2 = new Date(customPeriodEnd).getTime();
+    if (isNaN(d1) || isNaN(d2) || d2 < d1) return 0;
+    return Math.max(1, Math.round((d2 - d1) / (1000 * 60 * 60 * 24)) + 1);
+  }, [customPeriodStart, customPeriodEnd]);
+
+  const calcWeeks = useMemo(() => {
+    if (calcDays <= 0) return 0;
+    return Math.ceil(calcDays / 7);
+  }, [calcDays]);
+
+  const calcTotalSessions = useMemo(() => {
+    return calcWeeks * Math.max(1, customShiftsPerWeek || 1);
+  }, [calcWeeks, customShiftsPerWeek]);
+
+  const calcTotalAmount = useMemo(() => {
+    return calcTotalSessions * Math.max(0, customFeePerSession || 0);
+  }, [calcTotalSessions, customFeePerSession]);
 
   // Modal xem & in Phiếu thu
   const [printableReceipt, setPrintableReceipt] = useState<PaymentReceipt | null>(null);
@@ -209,52 +273,299 @@ export const TuitionAndRemindersView: React.FC<{
     );
   };
 
-  // Mở modal lập phiếu thu cho học viên và tự động phân bổ ưu tiên nợ cũ trước
-  const openReceiptModalForStudent = (stCode: string, defaultAmount?: number) => {
-    setReceiptStudentCode(stCode);
-    const unpaidRecs = db.receivables
-      .filter((r) => r.studentCode === stCode && r.remainingDebt > 0)
-      .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+  // Mở modal lập phiếu thu theo chuẩn quy trình: Chọn Lớp -> Chọn Học viên -> Chọn Đợt tính toán tự động
+  const openReceiptModal = (
+    targetClassCode?: string,
+    targetStudentCode?: string,
+    defaultAmt?: number
+  ) => {
+    // 1. Xác định Lớp học ở trung tâm
+    const clsCode =
+      targetClassCode ||
+      (selectedClassFilter !== 'ALL' ? selectedClassFilter : db.classes[0]?.code || 'TOAN12A');
+    setReceiptClassCode(clsCode);
+    const cls = db.classes.find((c) => c.code === clsCode);
 
-    const totalUnpaid = unpaidRecs.reduce((s, r) => s + r.remainingDebt, 0);
-    const amt = defaultAmount !== undefined ? defaultAmount : totalUnpaid || 500000;
-    setReceiptAmount(amt);
+    // 2. Lấy danh sách học sinh theo học đúng lớp đó
+    const enrs = db.enrollments.filter(
+      (e) => e.classCode === clsCode && e.status === 'DANG_HOC'
+    );
+    const validStCode =
+      targetStudentCode && enrs.some((e) => e.studentCode === targetStudentCode)
+        ? targetStudentCode
+        : enrs[0]?.studentCode || db.students[0]?.code || 'HV013';
+    setReceiptStudentCode(validStCode);
 
-    let remainingToAllocate = amt;
-    const allocMap: Record<string, number> = {};
-    for (const r of unpaidRecs) {
-      const alloc = Math.min(remainingToAllocate, r.remainingDebt);
-      allocMap[r.id] = alloc;
-      remainingToAllocate = Math.max(0, remainingToAllocate - alloc);
+    const st = db.students.find((s) => s.code === validStCode);
+    setReceiptPayerName(st?.parentName || st?.fullName || '');
+
+    // 3. Thiết lập thông số lịch học & đơn giá lớp
+    const shifts = cls?.recurringSchedule?.length || 2;
+    setCustomShiftsPerWeek(shifts);
+    const fee = cls?.feePerSession || 50000;
+    setCustomFeePerSession(fee);
+
+    // 4. Kiểm tra có khoản phải thu nào còn nợ của học sinh trong lớp này không
+    const unpaidInClass = db.receivables.filter(
+      (r) => r.studentCode === validStCode && r.classCode === clsCode && r.remainingDebt > 0
+    );
+
+    if (unpaidInClass.length > 0 && defaultAmt !== undefined) {
+      setReceiptCycleMode('EXISTING');
+      setReceiptSelectedRecId(unpaidInClass[0].id);
+      setReceiptAmount(defaultAmt);
+      setReceiptContent(`Thu học phí ${unpaidInClass[0].cycleName} - Lớp ${clsCode}`);
+      setManualAllocations({ [unpaidInClass[0].id]: defaultAmt });
+    } else {
+      setReceiptCycleMode('CUSTOM');
+      setCustomCycleName('Đợt 1 (06/07/2026 - 07/08/2026)');
+      setCustomPeriodStart('2026-07-06');
+      setCustomPeriodEnd('2026-08-07');
+      // 33 ngày: 06/07/2026 - 07/08/2026 -> 5 tuần
+      const days = 33;
+      const weeks = Math.ceil(days / 7);
+      const totalSessions = weeks * shifts;
+      const totalFee = totalSessions * fee;
+      setReceiptAmount(defaultAmt !== undefined ? defaultAmt : totalFee);
+      setReceiptContent(
+        `Thu học phí Đợt 1 (06/07/2026 - 07/08/2026) - Lớp ${clsCode} (${totalSessions} ca)`
+      );
+      setManualAllocations({});
     }
-    setManualAllocations(allocMap);
+
+    setReceiptDate(getTodayISO());
     setIsReceiptModalOpen(true);
+  };
+
+  // Giữ alias tương thích
+  const openReceiptModalForStudent = (stCode: string, defaultAmount?: number, classCode?: string) => {
+    openReceiptModal(classCode, stCode, defaultAmount);
+  };
+
+  // Khi người dùng đổi Lớp học ở trung tâm
+  const handleClassChangeInModal = (newClassCode: string) => {
+    setReceiptClassCode(newClassCode);
+    const cls = db.classes.find((c) => c.code === newClassCode);
+    const shifts = cls?.recurringSchedule?.length || 2;
+    setCustomShiftsPerWeek(shifts);
+    const fee = cls?.feePerSession || 50000;
+    setCustomFeePerSession(fee);
+
+    const enrs = db.enrollments.filter(
+      (e) => e.classCode === newClassCode && e.status === 'DANG_HOC'
+    );
+    const firstStCode = enrs[0]?.studentCode || db.students[0]?.code || '';
+    setReceiptStudentCode(firstStCode);
+
+    const st = db.students.find((s) => s.code === firstStCode);
+    setReceiptPayerName(st?.parentName || st?.fullName || '');
+
+    if (receiptCycleMode === 'CUSTOM') {
+      const d1 = new Date(customPeriodStart).getTime();
+      const d2 = new Date(customPeriodEnd).getTime();
+      const days =
+        !isNaN(d1) && !isNaN(d2) && d2 >= d1
+          ? Math.max(1, Math.round((d2 - d1) / (1000 * 60 * 60 * 24)) + 1)
+          : 33;
+      const weeks = Math.ceil(days / 7);
+      const totalSessions = weeks * shifts;
+      const totalFee = totalSessions * fee;
+      setReceiptAmount(totalFee);
+      setReceiptContent(`Thu học phí ${customCycleName} - Lớp ${newClassCode} (${totalSessions} ca)`);
+    } else {
+      const unpaidInClass = db.receivables.filter(
+        (r) => r.studentCode === firstStCode && r.classCode === newClassCode && r.remainingDebt > 0
+      );
+      if (unpaidInClass.length > 0) {
+        setReceiptSelectedRecId(unpaidInClass[0].id);
+        setReceiptAmount(unpaidInClass[0].remainingDebt);
+        setReceiptContent(`Thu học phí ${unpaidInClass[0].cycleName} - Lớp ${newClassCode}`);
+        setManualAllocations({ [unpaidInClass[0].id]: unpaidInClass[0].remainingDebt });
+      } else {
+        setReceiptCycleMode('CUSTOM');
+      }
+    }
+  };
+
+  // Khi người dùng đổi Học viên trong lớp
+  const handleStudentChangeInModal = (newStudentCode: string) => {
+    setReceiptStudentCode(newStudentCode);
+    const st = db.students.find((s) => s.code === newStudentCode);
+    setReceiptPayerName(st?.parentName || st?.fullName || '');
+
+    const unpaidInClass = db.receivables.filter(
+      (r) => r.studentCode === newStudentCode && r.classCode === receiptClassCode && r.remainingDebt > 0
+    );
+    if (unpaidInClass.length > 0 && receiptCycleMode === 'EXISTING') {
+      setReceiptSelectedRecId(unpaidInClass[0].id);
+      setReceiptAmount(unpaidInClass[0].remainingDebt);
+      setReceiptContent(`Thu học phí ${unpaidInClass[0].cycleName} - Lớp ${receiptClassCode}`);
+      setManualAllocations({ [unpaidInClass[0].id]: unpaidInClass[0].remainingDebt });
+    }
+  };
+
+  // Khi thay đổi khoảng thời gian của đợt thu
+  const handleDateRangeChange = (start: string, end: string) => {
+    setCustomPeriodStart(start);
+    setCustomPeriodEnd(end);
+    const d1 = new Date(start).getTime();
+    const d2 = new Date(end).getTime();
+    const days =
+      !isNaN(d1) && !isNaN(d2) && d2 >= d1
+        ? Math.max(1, Math.round((d2 - d1) / (1000 * 60 * 60 * 24)) + 1)
+        : 33;
+    const weeks = Math.ceil(days / 7);
+    const totalSessions = weeks * customShiftsPerWeek;
+    const totalFee = totalSessions * customFeePerSession;
+    setReceiptAmount(totalFee);
+    setReceiptContent(`Thu học phí ${customCycleName} - Lớp ${receiptClassCode} (${totalSessions} ca)`);
+  };
+
+  // Khi chọn một khoản nợ đợt thu có sẵn
+  const handleSelectExistingReceivable = (recId: string) => {
+    setReceiptSelectedRecId(recId);
+    const rec = db.receivables.find((r) => r.id === recId);
+    if (rec) {
+      setReceiptAmount(rec.remainingDebt);
+      setReceiptContent(`Thu học phí ${rec.cycleName} - Lớp ${rec.classCode} (${rec.sessionCount} buổi)`);
+      setManualAllocations({ [rec.id]: rec.remainingDebt });
+    }
   };
 
   const handleReceiptAmountChange = (newAmt: number) => {
     setReceiptAmount(newAmt);
-    const unpaidRecs = db.receivables
-      .filter((r) => r.studentCode === receiptStudentCode && r.remainingDebt > 0)
-      .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
-    let rem = Math.max(0, newAmt);
-    const allocMap: Record<string, number> = {};
-    for (const r of unpaidRecs) {
-      const alloc = Math.min(rem, r.remainingDebt);
-      allocMap[r.id] = alloc;
-      rem = Math.max(0, rem - alloc);
+    if (receiptCycleMode === 'EXISTING') {
+      const unpaidRecs = db.receivables
+        .filter(
+          (r) =>
+            r.studentCode === receiptStudentCode &&
+            (receiptClassCode ? r.classCode === receiptClassCode : true) &&
+            r.remainingDebt > 0
+        )
+        .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+      let rem = Math.max(0, newAmt);
+      const allocMap: Record<string, number> = {};
+      for (const r of unpaidRecs) {
+        const alloc = Math.min(rem, r.remainingDebt);
+        allocMap[r.id] = alloc;
+        rem = Math.max(0, rem - alloc);
+      }
+      setManualAllocations(allocMap);
     }
-    setManualAllocations(allocMap);
   };
 
+  // Lưu Phiếu thu Học phí (Tạo đợt thu tự động hoặc Gạch nợ đợt có sẵn)
   const handleSaveReceipt = (e: React.FormEvent) => {
     e.preventDefault();
     if (receiptAmount <= 0) {
       notify('Số tiền thu phải lớn hơn 0.', 'ERROR');
       return;
     }
+    if (!receiptClassCode) {
+      notify('Vui lòng chọn lớp học ở trung tâm.', 'ERROR');
+      return;
+    }
+    if (!receiptStudentCode) {
+      notify('Vui lòng chọn học viên nộp tiền.', 'ERROR');
+      return;
+    }
 
+    const receiptId = `PT-${Date.now()}`;
+    const receiptNumber = `PT-${receiptDate.slice(0, 7).replace('-', '')}-${String(
+      db.receipts.length + 1
+    ).padStart(3, '0')}`;
+
+    // TRƯỜNG HỢP 1: LẬP THEO ĐỢT THU TỰ ĐỘNG (Tuần × Ca × Đơn giá)
+    if (receiptCycleMode === 'CUSTOM') {
+      const netAmount = calcTotalAmount;
+      const allocated = Math.min(receiptAmount, netAmount);
+      const remainingDebt = Math.max(0, netAmount - allocated);
+      const newRecId = `REC-${Date.now()}`;
+      const newRecCode = `KPT-${receiptDate.slice(0, 7).replace('-', '')}-${String(
+        db.receivables.length + 1
+      ).padStart(3, '0')}`;
+
+      const enr = db.enrollments.find(
+        (e) => e.studentCode === receiptStudentCode && e.classCode === receiptClassCode
+      );
+
+      const cycleTitle =
+        customCycleName.trim() ||
+        `Đợt ${formatDateVN(customPeriodStart)} - ${formatDateVN(customPeriodEnd)}`;
+
+      const newRec: TuitionReceivable = {
+        id: newRecId,
+        code: newRecCode,
+        cycleName: cycleTitle,
+        studentCode: receiptStudentCode,
+        classCode: receiptClassCode,
+        enrollmentId: enr?.id || `ENR-${receiptStudentCode}-${receiptClassCode}`,
+        createdAt: receiptDate,
+        dueDate: customPeriodEnd || receiptDate,
+        periodStart: customPeriodStart || receiptDate,
+        periodEnd: customPeriodEnd || receiptDate,
+        billingMethod: selectedReceiptClass?.billingMethod || 'CYCLE_8_WEEKS',
+        sessionIds: [],
+        sessionDates: [],
+        sessionCount: calcTotalSessions,
+        unitPrice: customFeePerSession,
+        grossAmount: netAmount,
+        discountAmount: 0,
+        adjustmentAmount: 0,
+        netAmount,
+        openingDebtReference: 0,
+        paidAmount: allocated,
+        remainingDebt,
+        status: remainingDebt === 0 ? 'DA_DU' : allocated > 0 ? 'DONG_MOT_PHAN' : 'CHUA_DONG',
+        note: `Tự động tính: ${calcWeeks} tuần × ${customShiftsPerWeek} ca/tuần = ${calcTotalSessions} ca × ${formatCurrency(customFeePerSession)} = ${formatCurrency(netAmount)}`,
+      };
+
+      createReceivablesBatch([newRec]);
+
+      const allocation: ReceiptAllocation = {
+        id: `ALLOC-${Date.now()}-${newRecId}`,
+        receiptId,
+        receivableId: newRecId,
+        studentCode: receiptStudentCode,
+        classCode: receiptClassCode,
+        cycleName: newRec.cycleName,
+        allocatedAmount: allocated,
+        allocationDate: receiptDate,
+      };
+
+      const unallocatedCredit = Math.max(0, receiptAmount - allocated);
+
+      const newReceipt: PaymentReceipt = {
+        id: receiptId,
+        receiptNumber,
+        studentCode: receiptStudentCode,
+        paymentDate: receiptDate,
+        totalAmount: Math.round(receiptAmount),
+        allocatedTotal: allocated,
+        unallocatedCredit,
+        paymentMethod: receiptMethod,
+        collectorName: currentAccount.fullName,
+        payerName: receiptPayerName.trim() || undefined,
+        content: receiptContent,
+        allocations: [allocation],
+        createdAt: new Date().toISOString(),
+      };
+
+      createPaymentReceipt(newReceipt);
+      setIsReceiptModalOpen(false);
+      setPrintableReceipt(newReceipt);
+      notify(
+        `Đã lập phiếu thu ${receiptNumber} cho HV ${receiptStudentCode} tại lớp ${receiptClassCode} (${calcWeeks} tuần × ${customShiftsPerWeek} ca/tuần = ${formatCurrency(receiptAmount)}) thành công!`
+      );
+      return;
+    }
+
+    // TRƯỜNG HỢP 2: LẬP THEO ĐỢT THU CÓ SẴN (EXISTING)
     const unpaidRecs = db.receivables.filter(
-      (r) => r.studentCode === receiptStudentCode && r.remainingDebt > 0
+      (r) =>
+        r.studentCode === receiptStudentCode &&
+        (receiptClassCode ? r.classCode === receiptClassCode : true) &&
+        r.remainingDebt > 0
     );
 
     const allocations: ReceiptAllocation[] = [];
@@ -264,7 +575,7 @@ export const TuitionAndRemindersView: React.FC<{
       const val = Math.round(Number(manualAllocations[r.id] || 0));
       if (val > r.remainingDebt) {
         notify(
-          `Số tiền phân bổ cho lớp ${r.classCode} (${formatCurrency(val)}) vượt quá số nợ còn lại (${formatCurrency(r.remainingDebt)}).`,
+          `Số tiền phân bổ cho đợt ${r.cycleName} (${formatCurrency(val)}) vượt quá số nợ còn lại (${formatCurrency(r.remainingDebt)}).`,
           'ERROR'
         );
         return;
@@ -273,11 +584,29 @@ export const TuitionAndRemindersView: React.FC<{
         allocatedTotal += val;
         allocations.push({
           id: `ALLOC-${Date.now()}-${r.id}`,
-          receiptId: '',
+          receiptId,
           receivableId: r.id,
           studentCode: receiptStudentCode,
           classCode: r.classCode,
           cycleName: r.cycleName,
+          allocatedAmount: val,
+          allocationDate: receiptDate,
+        });
+      }
+    }
+
+    if (allocations.length === 0 && receiptSelectedRecId) {
+      const targetRec = unpaidRecs.find((r) => r.id === receiptSelectedRecId);
+      if (targetRec) {
+        const val = Math.min(receiptAmount, targetRec.remainingDebt);
+        allocatedTotal = val;
+        allocations.push({
+          id: `ALLOC-${Date.now()}-${targetRec.id}`,
+          receiptId,
+          receivableId: targetRec.id,
+          studentCode: receiptStudentCode,
+          classCode: targetRec.classCode,
+          cycleName: targetRec.cycleName,
           allocatedAmount: val,
           allocationDate: receiptDate,
         });
@@ -290,10 +619,6 @@ export const TuitionAndRemindersView: React.FC<{
     }
 
     const unallocatedCredit = Math.max(0, receiptAmount - allocatedTotal);
-    const receiptId = `PT-${Date.now()}`;
-    const receiptNumber = `PT-${receiptDate.slice(0, 7).replace('-', '')}-${String(
-      db.receipts.length + 1
-    ).padStart(3, '0')}`;
 
     const newReceipt: PaymentReceipt = {
       id: receiptId,
@@ -305,14 +630,16 @@ export const TuitionAndRemindersView: React.FC<{
       unallocatedCredit,
       paymentMethod: receiptMethod,
       collectorName: currentAccount.fullName,
+      payerName: receiptPayerName.trim() || undefined,
       content: receiptContent,
-      allocations: allocations.map((a) => ({ ...a, receiptId })),
+      allocations,
       createdAt: new Date().toISOString(),
     };
 
     createPaymentReceipt(newReceipt);
     setIsReceiptModalOpen(false);
     setPrintableReceipt(newReceipt);
+    notify(`Đã lập thành công phiếu thu ${receiptNumber}.`);
   };
 
   const handleGenerateCycleReceivables = (e: React.FormEvent) => {
@@ -870,7 +1197,7 @@ export const TuitionAndRemindersView: React.FC<{
             Điều chỉnh / Hoàn phí
           </button>
           <button
-            onClick={() => openReceiptModalForStudent('HV002', 300000)}
+            onClick={() => openReceiptModal()}
             className="inline-flex items-center gap-1.5 rounded bg-[#008653] px-4 py-2 text-sm font-bold text-white hover:bg-[#006B42]"
           >
             <CreditCard className="h-4 w-4" />
@@ -1014,7 +1341,7 @@ export const TuitionAndRemindersView: React.FC<{
                     {row.remainingDebt > 0 ? (
                       <button
                         onClick={() =>
-                          openReceiptModalForStudent(row.studentCode, row.remainingDebt)
+                          openReceiptModal(row.classCode, row.studentCode, row.remainingDebt)
                         }
                         className="rounded bg-[#008653] px-3 py-1 text-xs font-bold text-white hover:bg-[#006B42]"
                       >
@@ -1402,44 +1729,335 @@ export const TuitionAndRemindersView: React.FC<{
         </div>
       )}
 
-      {/* Modal Lập Phiếu thu Học phí (Hỗ trợ phân bổ nhiều khoản phải thu, đóng 1 phần, tiền dư) */}
+      {/* Modal Lập Phiếu thu Học phí (Quy trình chuẩn: Chọn Lớp -> Chọn Học viên -> Chọn Đợt thu tự động tính) */}
       {isReceiptModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="max-h-[92vh] w-full max-w-3xl overflow-y-auto rounded-lg border border-[#D4E8DB] bg-white shadow-xl">
+          <div className="max-h-[94vh] w-full max-w-3xl overflow-y-auto rounded-lg border border-[#D4E8DB] bg-white shadow-xl">
             <div className="flex items-center justify-between bg-[#00543C] px-6 py-4 text-white">
-              <h3 className="text-xl font-bold">Lập Phiếu thu Học phí & Phân bổ Công nợ</h3>
-              <button onClick={() => setIsReceiptModalOpen(false)}>
+              <div>
+                <h3 className="text-xl font-bold">Lập Phiếu thu Học phí</h3>
+                <div className="text-xs text-[#D4E8DB]">
+                  Chọn Lớp học ➔ Chọn Học viên ➔ Tự động tính học phí theo Đợt (Tuần × Ca/tuần × Đơn giá)
+                </div>
+              </div>
+              <button
+                onClick={() => setIsReceiptModalOpen(false)}
+                className="text-white hover:text-white/80 p-1"
+              >
                 <X className="h-5 w-5" />
               </button>
             </div>
+
             <form onSubmit={handleSaveReceipt} className="space-y-4 p-6 text-sm">
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <div>
-                  <label className="block font-bold">Chọn Học viên nộp tiền *</label>
-                  <select
-                    value={receiptStudentCode}
-                    onChange={(e) => openReceiptModalForStudent(e.target.value)}
-                    className="mt-1 w-full rounded border border-[#D4E8DB] px-3 py-2 font-bold"
-                  >
-                    {db.students.map((s) => (
-                      <option key={s.code} value={s.code}>
-                        {s.code} – {s.fullName}
-                      </option>
-                    ))}
-                  </select>
+              {/* BƯỚC 1: CHỌN LỚP HỌC Ở TRUNG TÂM */}
+              <div className="rounded-lg border border-[#D4E8DB] bg-[#F2FAF5] p-3.5 space-y-2">
+                <label className="block text-xs font-bold uppercase tracking-wider text-[#00543C]">
+                  1. Chọn Lớp học ở trung tâm *
+                </label>
+                <select
+                  value={receiptClassCode}
+                  onChange={(e) => handleClassChangeInModal(e.target.value)}
+                  className="w-full rounded border border-[#008653] bg-white px-3 py-2 text-sm font-bold text-[#00543C] shadow-2xs"
+                >
+                  {db.classes.map((c) => (
+                    <option key={c.code} value={c.code}>
+                      {c.code} – {c.name} ({c.recurringSchedule?.length || 2} ca/tuần · {formatCurrency(c.feePerSession)}/buổi)
+                    </option>
+                  ))}
+                </select>
+                {selectedReceiptClass && (
+                  <div className="flex flex-wrap items-center justify-between gap-1 text-xs text-[#173B2C]/80">
+                    <div>
+                      Môn học: <strong>{selectedReceiptClass.subject}</strong> · Lịch học:{' '}
+                      <strong>
+                        {selectedReceiptClass.recurringSchedule && selectedReceiptClass.recurringSchedule.length > 0
+                          ? selectedReceiptClass.recurringSchedule
+                              .map((s) => {
+                                const dayLabel = s.dayOfWeek === 0 ? 'CN' : `T${s.dayOfWeek + 1}`;
+                                const sh = db.shifts.find((x) => x.id === s.shiftId);
+                                return `${dayLabel}${sh ? ` (${sh.startTime}-${sh.endTime})` : ''}`;
+                              })
+                              .join(', ')
+                          : `${selectedReceiptClass.recurringSchedule?.length || 2} ca/tuần`}
+                      </strong>
+                    </div>
+                    <div className="font-bold text-[#008653]">
+                      Đơn giá: {formatCurrency(selectedReceiptClass.feePerSession)}/buổi
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* BƯỚC 2: CHỌN TÊN HỌC VIÊN NỘP TIỀN TRONG LỚP ĐÓ */}
+              <div className="rounded-lg border border-[#D4E8DB] bg-[#F2FAF5] p-3.5 space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <label className="block text-xs font-bold uppercase tracking-wider text-[#00543C]">
+                    2. Chọn Tên Học viên nộp tiền trong lớp {receiptClassCode} *
+                  </label>
+                  <span className="text-xs font-bold text-[#008653]">
+                    {studentsInReceiptClass.length} học viên trong lớp
+                  </span>
                 </div>
+                <select
+                  value={receiptStudentCode}
+                  onChange={(e) => handleStudentChangeInModal(e.target.value)}
+                  className="w-full rounded border border-[#008653] bg-white px-3 py-2 text-sm font-bold text-[#173B2C] shadow-2xs"
+                >
+                  {studentsInReceiptClass.length === 0 ? (
+                    <option value="">(Lớp chưa có học viên nào ghi danh)</option>
+                  ) : (
+                    studentsInReceiptClass.map((s) => (
+                      <option key={s.code} value={s.code}>
+                        {s.code} – {s.fullName} {s.schoolClass ? `(${s.schoolClass})` : ''} {s.phone ? `· SĐT: ${s.phone}` : ''}
+                      </option>
+                    ))
+                  )}
+                </select>
+                {selectedReceiptStudent && (
+                  <div className="flex flex-wrap items-center justify-between gap-1 text-xs text-[#173B2C]/85">
+                    <div>
+                      Phụ huynh: <strong>{selectedReceiptStudent.parentName || 'Chưa cập nhật'}</strong> · SĐT Zalo:{' '}
+                      <strong className="text-[#008653]">{selectedReceiptStudent.phone || '—'}</strong>
+                    </div>
+                    {selectedReceiptStudent.schoolClass && (
+                      <span className="rounded bg-[#D4E8DB] px-2 py-0.5 font-bold text-[#00543C]">
+                        Lớp trường: {selectedReceiptStudent.schoolClass}
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* BƯỚC 3: CHỌN ĐỢT THU & CÔNG THỨC TỰ ĐỘNG TÍNH */}
+              <div className="rounded-lg border-2 border-[#008653] bg-white p-4 space-y-3 shadow-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#D4E8DB] pb-2">
+                  <div className="text-xs font-bold uppercase tracking-wider text-[#00543C]">
+                    3. Chọn Đợt tạo phiếu thu & Công thức tính học phí *
+                  </div>
+                  <div className="flex items-center gap-1.5 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setReceiptCycleMode('CUSTOM');
+                        setReceiptAmount(calcTotalAmount);
+                        setReceiptContent(
+                          `Thu học phí ${customCycleName} - Lớp ${receiptClassCode} (${calcTotalSessions} ca)`
+                        );
+                      }}
+                      className={`rounded px-2.5 py-1 font-bold transition ${
+                        receiptCycleMode === 'CUSTOM'
+                          ? 'bg-[#008653] text-white shadow-2xs'
+                          : 'border border-[#D4E8DB] bg-white text-[#173B2C] hover:bg-[#F2FAF5]'
+                      }`}
+                    >
+                      Tự động tính theo Khoảng ngày (Tuần × Ca × Đơn giá)
+                    </button>
+                    {availableReceivablesInClass.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setReceiptCycleMode('EXISTING');
+                          const firstRec = availableReceivablesInClass[0];
+                          if (firstRec) {
+                            setReceiptSelectedRecId(firstRec.id);
+                            setReceiptAmount(firstRec.remainingDebt);
+                            setReceiptContent(
+                              `Thu học phí ${firstRec.cycleName} - Lớp ${receiptClassCode} (${firstRec.sessionCount} buổi)`
+                            );
+                            setManualAllocations({ [firstRec.id]: firstRec.remainingDebt });
+                          }
+                        }}
+                        className={`rounded px-2.5 py-1 font-bold transition ${
+                          receiptCycleMode === 'EXISTING'
+                            ? 'bg-[#008653] text-white shadow-2xs'
+                            : 'border border-[#D4E8DB] bg-white text-[#173B2C] hover:bg-[#F2FAF5]'
+                        }`}
+                      >
+                        Đợt thu có sẵn ({availableReceivablesInClass.length})
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {receiptCycleMode === 'EXISTING' ? (
+                  <div className="space-y-3">
+                    <div>
+                      <label className="block text-xs font-bold text-[#173B2C]">
+                        Chọn đợt thu còn nợ của học viên trong lớp {receiptClassCode}:
+                      </label>
+                      <select
+                        value={receiptSelectedRecId}
+                        onChange={(e) => handleSelectExistingReceivable(e.target.value)}
+                        className="mt-1 w-full rounded border border-[#D4E8DB] bg-white px-3 py-2 text-sm font-bold"
+                      >
+                        {availableReceivablesInClass.map((r) => (
+                          <option key={r.id} value={r.id}>
+                            {r.cycleName} ({r.code}) – {r.sessionCount} buổi – Còn nợ: {formatCurrency(r.remainingDebt)} / Phải thu: {formatCurrency(r.netAmount)}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div>
+                        <label className="block text-xs font-bold text-[#173B2C]">Tên đợt thu học phí *</label>
+                        <input
+                          type="text"
+                          required
+                          value={customCycleName}
+                          onChange={(e) => {
+                            setCustomCycleName(e.target.value);
+                            setReceiptContent(
+                              `Thu học phí ${e.target.value} - Lớp ${receiptClassCode} (${calcTotalSessions} ca)`
+                            );
+                          }}
+                          className="mt-1 w-full rounded border border-[#D4E8DB] px-2.5 py-1.5 text-xs font-bold"
+                          placeholder="VD: Đợt 1 (06/07/2026 - 07/08/2026)"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-[#173B2C]">Từ ngày bắt đầu đợt *</label>
+                        <input
+                          type="date"
+                          required
+                          value={customPeriodStart}
+                          onChange={(e) => handleDateRangeChange(e.target.value, customPeriodEnd)}
+                          className="mt-1 w-full rounded border border-[#D4E8DB] px-2.5 py-1.5 text-xs font-bold"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-[#173B2C]">Đến ngày kết thúc đợt *</label>
+                        <input
+                          type="date"
+                          required
+                          value={customPeriodEnd}
+                          onChange={(e) => handleDateRangeChange(customPeriodStart, e.target.value)}
+                          className="mt-1 w-full rounded border border-[#D4E8DB] px-2.5 py-1.5 text-xs font-bold"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Số ca/tuần và đơn giá */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                      <div>
+                        <label className="block text-xs font-bold text-[#173B2C]">
+                          Số ca học / tuần (Lấy từ lịch lớp)
+                        </label>
+                        <div className="mt-1 flex items-center gap-2">
+                          <input
+                            type="number"
+                            min={1}
+                            max={14}
+                            value={customShiftsPerWeek}
+                            onChange={(e) => {
+                              const s = Math.max(1, Number(e.target.value));
+                              setCustomShiftsPerWeek(s);
+                              const totalSessions = calcWeeks * s;
+                              const total = totalSessions * customFeePerSession;
+                              setReceiptAmount(total);
+                              setReceiptContent(
+                                `Thu học phí ${customCycleName} - Lớp ${receiptClassCode} (${totalSessions} ca)`
+                              );
+                            }}
+                            className="w-24 rounded border border-[#D4E8DB] px-2.5 py-1.5 text-xs font-bold text-center"
+                          />
+                          <span className="text-xs text-[#173B2C]/70">ca/tuần (Mặc định theo lịch phân công)</span>
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-[#173B2C]">
+                          Đơn giá 1 buổi (VNĐ)
+                        </label>
+                        <input
+                          type="number"
+                          min={1000}
+                          step={5000}
+                          value={customFeePerSession}
+                          onChange={(e) => {
+                            const f = Math.max(0, Number(e.target.value));
+                            setCustomFeePerSession(f);
+                            const total = calcTotalSessions * f;
+                            setReceiptAmount(total);
+                          }}
+                          className="mt-1 w-full rounded border border-[#D4E8DB] px-2.5 py-1.5 text-xs font-bold"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Khung hiển thị công thức trực quan */}
+                    <div className="rounded border border-[#008653] bg-[#F2FAF5] p-3 shadow-2xs">
+                      <div className="text-xs font-bold text-[#00543C] mb-2 flex flex-wrap items-center justify-between gap-1">
+                        <span>BẢNG TÍNH TỰ ĐỘNG ĐỢT THU HỌC PHÍ:</span>
+                        <span className="text-[#008653]">
+                          {calcDays} ngày thực tế ({formatDateVN(customPeriodStart)} ➔ {formatDateVN(customPeriodEnd)})
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs">
+                        <div className="bg-white p-2 rounded border border-[#D4E8DB]">
+                          <div className="text-[#173B2C]/70">Số tuần học</div>
+                          <div className="text-base font-bold text-[#00543C]">{calcWeeks} tuần</div>
+                        </div>
+                        <div className="bg-white p-2 rounded border border-[#D4E8DB]">
+                          <div className="text-[#173B2C]/70">Số ca/tuần</div>
+                          <div className="text-base font-bold text-[#00543C]">{customShiftsPerWeek} ca/tuần</div>
+                        </div>
+                        <div className="bg-white p-2 rounded border border-[#D4E8DB]">
+                          <div className="text-[#173B2C]/70">Tổng số ca học</div>
+                          <div className="text-base font-bold text-[#008653]">{calcTotalSessions} buổi</div>
+                        </div>
+                        <div className="bg-white p-2 rounded border border-[#D4E8DB]">
+                          <div className="text-[#173B2C]/70">Đơn giá / buổi</div>
+                          <div className="text-base font-bold text-[#00543C]">
+                            {formatCurrency(customFeePerSession)}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="mt-2.5 pt-2 border-t border-[#D4E8DB] flex flex-wrap items-center justify-between gap-2">
+                        <div className="text-xs font-bold text-[#173B2C]">
+                          Công thức:{' '}
+                          <span className="text-[#00543C]">
+                            {calcWeeks} tuần × {customShiftsPerWeek} ca/tuần = {calcTotalSessions} buổi × {formatCurrency(customFeePerSession)}
+                          </span>
+                        </div>
+                        <div className="text-base font-bold text-[#008653]">
+                          = {formatCurrency(calcTotalAmount)}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* BƯỚC 4: THÔNG TIN PHIẾU THU TIỀN */}
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                 <div>
-                  <label className="block font-bold">Ngày thu tiền *</label>
+                  <label className="block text-xs font-bold text-[#173B2C]">Ngày thu tiền *</label>
                   <input
                     type="date"
                     required
                     value={receiptDate}
                     onChange={(e) => setReceiptDate(e.target.value)}
-                    className="mt-1 w-full rounded border border-[#D4E8DB] px-3 py-2"
+                    className="mt-1 w-full rounded border border-[#D4E8DB] px-3 py-2 text-sm font-bold"
                   />
                 </div>
                 <div>
-                  <label className="block font-bold">Tổng số tiền thực thu (VNĐ) *</label>
+                  <label className="block text-xs font-bold text-[#173B2C]">Hình thức nộp (CK / TM) *</label>
+                  <select
+                    value={receiptMethod}
+                    onChange={(e) => setReceiptMethod(e.target.value as 'TM' | 'CK')}
+                    className="mt-1 w-full rounded border border-[#D4E8DB] px-3 py-2 text-sm font-bold"
+                  >
+                    <option value="CK">Chuyển khoản (CK)</option>
+                    <option value="TM">Tiền mặt (TM)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-[#00543C]">
+                    Tổng số tiền thực thu (VNĐ) *
+                  </label>
                   <input
                     type="number"
                     min={1000}
@@ -1447,113 +2065,49 @@ export const TuitionAndRemindersView: React.FC<{
                     required
                     value={receiptAmount}
                     onChange={(e) => handleReceiptAmountChange(Number(e.target.value))}
-                    className="mt-1 w-full rounded border border-[#008653] bg-[#F2FAF5] px-3 py-2 text-lg font-bold text-[#00543C] tabular-nums"
+                    className="mt-1 w-full rounded border-2 border-[#008653] bg-[#F2FAF5] px-3 py-2 text-base font-bold text-[#00543C] tabular-nums shadow-2xs"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="block text-xs font-bold text-[#173B2C]">
+                    Người nộp tiền (Phụ huynh / Học viên)
+                  </label>
+                  <input
+                    type="text"
+                    value={receiptPayerName}
+                    onChange={(e) => setReceiptPayerName(e.target.value)}
+                    className="mt-1 w-full rounded border border-[#D4E8DB] px-3 py-2 text-sm"
+                    placeholder="VD: Nguyễn Văn A (Phụ huynh)"
                   />
                 </div>
                 <div>
-                  <label className="block font-bold">Hình thức đóng (CK / TM) *</label>
-                  <select
-                    value={receiptMethod}
-                    onChange={(e) => setReceiptMethod(e.target.value as 'TM' | 'CK')}
-                    className="mt-1 w-full rounded border border-[#D4E8DB] px-3 py-2 font-bold"
-                  >
-                    <option value="CK">Chuyển khoản (CK)</option>
-                    <option value="TM">Tiền mặt (TM)</option>
-                  </select>
+                  <label className="block text-xs font-bold text-[#173B2C]">Nội dung phiếu thu *</label>
+                  <input
+                    type="text"
+                    required
+                    value={receiptContent}
+                    onChange={(e) => setReceiptContent(e.target.value)}
+                    className="mt-1 w-full rounded border border-[#D4E8DB] px-3 py-2 text-sm"
+                  />
                 </div>
-              </div>
-
-              {/* Phân bổ cho các khoản phải thu còn nợ (ưu tiên nợ cũ) */}
-              <div className="rounded border border-[#D4E8DB] bg-[#F2FAF5] p-4">
-                <div className="mb-2 font-bold text-[#00543C]">
-                  Phân bổ cho các lớp và kỳ thu của học viên (Ưu tiên nợ cũ, cho phép điều chỉnh):
-                </div>
-                <div className="space-y-2">
-                  {db.receivables
-                    .filter((r) => r.studentCode === receiptStudentCode && r.remainingDebt > 0)
-                    .sort((a, b) => a.dueDate.localeCompare(b.dueDate))
-                    .map((r) => (
-                      <div
-                        key={r.id}
-                        className="flex flex-wrap items-center justify-between gap-2 rounded border border-[#D4E8DB] bg-white p-2.5"
-                      >
-                        <div>
-                          <div className="font-bold">
-                            Lớp {r.classCode} – {r.cycleName} ({r.code})
-                          </div>
-                          <div className="text-xs text-[#173B2C]/75">
-                            Phải thu: {formatCurrency(r.netAmount)} · Đã đóng:{' '}
-                            {formatCurrency(r.paidAmount)} · Còn nợ:{' '}
-                            <strong className="text-red-600">
-                              {formatCurrency(r.remainingDebt)}
-                            </strong>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-bold">Phân bổ:</span>
-                          <input
-                            type="number"
-                            min={0}
-                            max={r.remainingDebt}
-                            step={10000}
-                            value={manualAllocations[r.id] || 0}
-                            onChange={(e) =>
-                              setManualAllocations({
-                                ...manualAllocations,
-                                [r.id]: Number(e.target.value),
-                              })
-                            }
-                            className="w-36 rounded border border-[#D4E8DB] px-2.5 py-1 text-right font-bold tabular-nums"
-                          />
-                        </div>
-                      </div>
-                    ))}
-                </div>
-
-                {(() => {
-                  const sumAlloc = Object.values(manualAllocations).reduce(
-                    (s, v) => s + Number(v || 0),
-                    0
-                  );
-                  const excess = Math.max(0, receiptAmount - sumAlloc);
-                  return (
-                    <div className="mt-3 flex flex-wrap justify-between border-t border-[#D4E8DB] pt-2 text-xs font-bold">
-                      <span>
-                        Tổng phân bổ vào công nợ:{' '}
-                        <strong className="text-[#008653]">{formatCurrency(sumAlloc)}</strong>
-                      </span>
-                      <span>
-                        Tiền dư chuyển vào tài khoản trả trước của HV:{' '}
-                        <strong className="text-[#00543C]">{formatCurrency(excess)}</strong>
-                      </span>
-                    </div>
-                  );
-                })()}
-              </div>
-
-              <div>
-                <label className="block font-bold">Nội dung phiếu thu *</label>
-                <input
-                  type="text"
-                  required
-                  value={receiptContent}
-                  onChange={(e) => setReceiptContent(e.target.value)}
-                  className="mt-1 w-full rounded border border-[#D4E8DB] px-3 py-2"
-                />
               </div>
 
               <div className="flex justify-end gap-3 border-t border-[#D4E8DB] pt-4">
                 <button
                   type="button"
                   onClick={() => setIsReceiptModalOpen(false)}
-                  className="rounded border border-[#D4E8DB] px-4 py-2 font-bold"
+                  className="rounded border border-[#D4E8DB] px-4 py-2 font-bold hover:bg-[#F2FAF5]"
                 >
                   Huỷ
                 </button>
                 <button
                   type="submit"
-                  className="rounded bg-[#008653] px-5 py-2 font-bold text-white hover:bg-[#006B42]"
+                  className="inline-flex items-center gap-1.5 rounded bg-[#008653] px-5 py-2 font-bold text-white shadow-xs hover:bg-[#006B42]"
                 >
+                  <CreditCard className="h-4 w-4" />
                   Lưu & Xuất Phiếu thu
                 </button>
               </div>
@@ -1592,10 +2146,18 @@ export const TuitionAndRemindersView: React.FC<{
                   <div>
                     Họ và tên học viên: <strong>{st?.fullName}</strong> (Mã HV:{' '}
                     <strong>{printableReceipt.studentCode}</strong>)
+                    {st?.schoolClass && (
+                      <span className="ml-2 rounded bg-[#D4E8DB]/60 px-2 py-0.5 text-xs font-bold text-[#00543C]">
+                        Lớp trường: {st.schoolClass}
+                      </span>
+                    )}
                   </div>
                   <div>
-                    Họ tên phụ huynh: <strong>{st?.parentName}</strong> – SĐT:{' '}
-                    <strong>{st?.phone}</strong>
+                    Người nộp tiền:{' '}
+                    <strong>
+                      {printableReceipt.payerName || st?.parentName || st?.fullName}
+                    </strong>{' '}
+                    (SĐT: <strong>{st?.phone || '—'}</strong>)
                   </div>
                   <div>
                     Nội dung thu: <strong>{printableReceipt.content}</strong>
@@ -1609,19 +2171,21 @@ export const TuitionAndRemindersView: React.FC<{
                     </strong>
                   </div>
                   <div className="rounded border border-[#D4E8DB] bg-[#F2FAF5] p-3">
-                    <div className="font-bold">Chi tiết phân bổ lớp & kỳ thu:</div>
+                    <div className="font-bold text-xs uppercase tracking-wider text-[#00543C]">
+                      Chi tiết phân bổ lớp & đợt thu học phí:
+                    </div>
                     {printableReceipt.allocations.map((a) => (
-                      <div key={a.id} className="flex justify-between text-xs mt-1">
+                      <div key={a.id} className="flex justify-between text-xs mt-1.5">
                         <span>
-                          • Lớp {a.classCode} ({a.cycleName})
+                          • Lớp <strong>{a.classCode}</strong> ({a.cycleName})
                         </span>
-                        <strong className="tabular-nums">
+                        <strong className="tabular-nums text-[#008653]">
                           {formatCurrency(a.allocatedAmount)}
                         </strong>
                       </div>
                     ))}
                     {printableReceipt.unallocatedCredit > 0 && (
-                      <div className="mt-1 flex justify-between border-t border-[#D4E8DB] pt-1 text-xs font-bold text-[#00543C]">
+                      <div className="mt-1.5 flex justify-between border-t border-[#D4E8DB] pt-1 text-xs font-bold text-[#00543C]">
                         <span>• Tiền dư ghi nhận trả trước kỳ sau:</span>
                         <span>{formatCurrency(printableReceipt.unallocatedCredit)}</span>
                       </div>
@@ -1637,7 +2201,13 @@ export const TuitionAndRemindersView: React.FC<{
             <div className="mt-6 grid grid-cols-2 text-center text-sm">
               <div>
                 <div className="font-bold">Người nộp tiền</div>
-                <div className="mt-12 text-xs italic">(Ký, ghi rõ họ tên)</div>
+                <div className="mt-12 text-xs italic">
+                  {printableReceipt.payerName ? (
+                    <span className="font-bold not-italic">{printableReceipt.payerName}</span>
+                  ) : (
+                    '(Ký, ghi rõ họ tên)'
+                  )}
+                </div>
               </div>
               <div>
                 <div className="font-bold">Người lập phiếu thu</div>
@@ -1654,7 +2224,7 @@ export const TuitionAndRemindersView: React.FC<{
               </button>
               <button
                 onClick={() => window.print()}
-                className="inline-flex items-center gap-1.5 rounded bg-[#008653] px-5 py-2 font-bold text-white"
+                className="inline-flex items-center gap-1.5 rounded bg-[#008653] px-5 py-2 font-bold text-white hover:bg-[#006B42]"
               >
                 <Printer className="h-4 w-4" />
                 In phiếu thu

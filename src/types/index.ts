@@ -253,6 +253,7 @@ export interface PaymentReceipt {
   unallocatedCredit: number; // Tiền dư chuyển vào tài khoản trả trước của học viên
   paymentMethod: 'TM' | 'CK'; // Tiền mặt | Chuyển khoản
   collectorName: string;
+  payerName?: string;
   content: string;
   allocations: ReceiptAllocation[];
   createdAt: string;
