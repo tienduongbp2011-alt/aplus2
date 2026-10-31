@@ -107,20 +107,45 @@ export function downloadExcelTemplate(entityType: ImportEntityType): void {
       fileName = 'Mau_Nhap_Hoc_Vien_APLUS2.xlsx';
       sampleData = [
         {
-          'Mã học viên (*)': 'HV015',
-          'Họ và tên (*)': 'Nguyễn Minh Khôi',
-          'Ngày sinh (dd/MM/yyyy) (*)': '15/05/2014',
+          'Mã học viên (*)': 'HV013',
+          'Họ và tên (*)': 'Nguyễn Tiến Đạt',
+          'Ngày sinh (dd/MM/yyyy) (*)': '15/04/2009',
           'Giới tính (Nam/Nữ)': 'Nam',
-          'Trường đang học': 'THCS Bình An',
-          'Lớp tại trường': '6A1',
-          'Họ tên phụ huynh (*)': 'Nguyễn Văn Hùng',
-          'Điện thoại liên hệ (*)': '0909123456',
+          'Trường đang học': 'THPT Thanh Hoà',
+          'Lớp tại trường': '12TN1',
+          'Họ tên phụ huynh (*)': 'Nguyễn Tiến Dũng',
+          'Điện thoại liên hệ (*)': '0901234501',
           'Ngày tiếp nhận (dd/MM/yyyy) (*)': '01/09/2026',
-          'Ghi chú': 'Học viên mới đăng ký',
+          'Ghi chú': 'Học sinh lớp 12TN1 trường THPT Thanh Hoà',
+        },
+        {
+          'Mã học viên (*)': 'HV014',
+          'Họ và tên (*)': 'Trần Mai Anh',
+          'Ngày sinh (dd/MM/yyyy) (*)': '20/08/2009',
+          'Giới tính (Nam/Nữ)': 'Nữ',
+          'Trường đang học': 'THPT Thanh Hoà',
+          'Lớp tại trường': '12TN1',
+          'Họ tên phụ huynh (*)': 'Trần Văn Bình',
+          'Điện thoại liên hệ (*)': '0901234502',
+          'Ngày tiếp nhận (dd/MM/yyyy) (*)': '01/09/2026',
+          'Ghi chú': 'Học sinh lớp 12TN1 trường THPT Thanh Hoà',
+        },
+        {
+          'Mã học viên (*)': 'HV015',
+          'Họ và tên (*)': 'Lê Minh Tuấn',
+          'Ngày sinh (dd/MM/yyyy) (*)': '03/11/2009',
+          'Giới tính (Nam/Nữ)': 'Nam',
+          'Trường đang học': 'THPT Thanh Hoà',
+          'Lớp tại trường': '12TN2',
+          'Họ tên phụ huynh (*)': 'Lê Hoàng Phúc',
+          'Điện thoại liên hệ (*)': '0901234503',
+          'Ngày tiếp nhận (dd/MM/yyyy) (*)': '01/09/2026',
+          'Ghi chú': 'Học sinh lớp 12TN2 trường THPT Thanh Hoà',
         },
       ];
       instructions = [
-        { Cột: 'Mã học viên (*)', 'Quy tắc': 'Duy nhất toàn trung tâm. Một học viên học nhiều lớp dùng chung 1 mã.' },
+        { Cột: 'Mã học viên (*)', 'Quy tắc': 'Duy nhất toàn trung tâm. Một học viên học nhiều môn dùng chung 1 mã.' },
+        { Cột: 'Trường đang học & Lớp tại trường', 'Quy tắc': 'VD: THPT Thanh Hoà, Lớp 12TN1. Hệ thống tự động phân loại theo lớp trường để đăng ký học hàng loạt.' },
         { Cột: 'Điện thoại liên hệ (*)', 'Quy tắc': 'Số điện thoại phụ huynh, giữ số 0 ở đầu.' },
       ];
       break;
@@ -333,8 +358,25 @@ export async function parseAndValidateExcelFile(
       const fullName = String(raw['Họ và tên (*)'] || raw['Họ và tên'] || '').trim();
       const dob = parseToISODate(raw['Ngày sinh (dd/MM/yyyy) (*)'] || raw['Ngày sinh']);
       const genderRaw = String(raw['Giới tính (Nam/Nữ)'] || 'Nam').trim();
-      const school = String(raw['Trường đang học'] || '').trim();
-      const schoolClass = String(raw['Lớp tại trường'] || '').trim();
+      const school = String(
+        raw['Trường đang học'] ||
+        raw['Trường'] ||
+        raw['Trường học'] ||
+        raw['Tên trường'] ||
+        raw['Trường phổ thông'] ||
+        raw['Trường THPT / THCS'] ||
+        ''
+      ).trim();
+      const schoolClass = String(
+        raw['Lớp tại trường'] ||
+        raw['Lớp trường'] ||
+        raw['Lớp đang học'] ||
+        raw['Lớp học'] ||
+        raw['Lớp phổ thông'] ||
+        raw['Lớp'] ||
+        raw['Khối lớp'] ||
+        ''
+      ).trim();
       const parentName = String(raw['Họ tên phụ huynh (*)'] || raw['Họ tên phụ huynh'] || '').trim();
       const phone = normalizePhone(raw['Điện thoại liên hệ (*)'] || raw['Điện thoại liên hệ']);
       const admissionDate = parseToISODate(
@@ -362,8 +404,8 @@ export async function parseAndValidateExcelFile(
           fullName,
           dob,
           gender: genderRaw === 'Nữ' ? 'Nữ' : genderRaw === 'Khác' ? 'Khác' : 'Nam',
-          school: school || 'THCS Bình An',
-          schoolClass: schoolClass || '6A',
+          school: school || 'THPT Thanh Hoà',
+          schoolClass: schoolClass || '12TN1',
           parentName,
           phone,
           admissionDate,

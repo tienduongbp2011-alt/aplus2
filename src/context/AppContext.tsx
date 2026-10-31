@@ -114,6 +114,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (saved) {
         const parsed = JSON.parse(saved) as AppDatabase;
         if (parsed && parsed.teachers && parsed.classes && parsed.students) {
+          const seed = createInitialSeedDatabase();
+          for (const c of seed.classes) {
+            if (!parsed.classes.some((existing) => existing.code === c.code)) {
+              parsed.classes.push(c);
+            }
+          }
+          for (const s of seed.students) {
+            if (!parsed.students.some((existing) => existing.code === s.code)) {
+              parsed.students.push(s);
+            }
+          }
           return parsed;
         }
       }
@@ -805,7 +816,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       validToSave.push(enr);
     }
 
-    if (validToSave.length === 0) return 0;
+    if (validToSave.length === 0) {
+      notify('Tất cả học sinh được chọn đều đã có đăng ký hoạt động tại các môn này.', 'WARNING');
+      return 0;
+    }
+
+    const studentCount = new Set(validToSave.map((e) => e.studentCode)).size;
+    const classCodes = Array.from(new Set(validToSave.map((e) => e.classCode)));
 
     updateDb(
       (prev) => ({
@@ -813,14 +830,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         enrollments: [...validToSave, ...prev.enrollments],
       }),
       {
-        action: 'ĐĂNG KÝ NHIỀU MÔN / LỚP HỌC',
-        target: `HV ${validToSave[0].studentCode} (${validToSave.length} lớp)`,
-        detail: `Các lớp đăng ký: ${validToSave.map((e) => e.classCode).join(', ')}`,
+        action: studentCount > 1 ? 'ĐĂNG KÝ HỌC THEO LỚP TRƯỜNG' : 'ĐĂNG KÝ NHIỀU MÔN / LỚP HỌC',
+        target:
+          studentCount > 1
+            ? `${studentCount} học sinh -> ${classCodes.length} môn (${validToSave.length} lượt ghi danh)`
+            : `HV ${validToSave[0].studentCode} (${validToSave.length} môn)`,
+        detail: `Các lớp đăng ký: ${classCodes.join(', ')}`,
       }
     );
 
     notify(
-      `Đã đăng ký thành công ${validToSave.length} môn/lớp học (${validToSave.map((e) => e.classCode).join(', ')}) và tự động cập nhật vào danh sách các lớp!`
+      studentCount > 1
+        ? `Đã đăng ký thành công cho ${studentCount} học sinh vào ${classCodes.length} môn (${classCodes.join(', ')}) với tổng ${validToSave.length} lượt ghi danh và tự động cập nhật vào danh sách các lớp!`
+        : `Đã đăng ký thành công ${validToSave.length} môn/lớp học (${classCodes.join(', ')}) và tự động cập nhật vào danh sách các lớp!`
     );
     return validToSave.length;
   };

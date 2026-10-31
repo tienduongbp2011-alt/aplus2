@@ -6,6 +6,7 @@ import {
   Edit2,
   Eye,
   FileSpreadsheet,
+  GraduationCap,
   LogOut,
   Plus,
   Search,
@@ -49,6 +50,7 @@ export const StudentsAndEnrollmentsView: React.FC<{ mode: 'STUDENTS' | 'ENROLLME
   const [search, setSearch] = useState('');
   const [classFilter, setClassFilter] = useState('ALL');
   const [statusFilter, setStatusFilter] = useState('ALL');
+  const [schoolClassFilter, setSchoolClassFilter] = useState('ALL');
 
   const [isStudentModalOpen, setIsStudentModalOpen] = useState(false);
   const [isEditStudent, setIsEditStudent] = useState(false);
@@ -56,6 +58,17 @@ export const StudentsAndEnrollmentsView: React.FC<{ mode: 'STUDENTS' | 'ENROLLME
   const [isEnrollModalOpen, setIsEnrollModalOpen] = useState(false);
   const [isEditEnroll, setIsEditEnroll] = useState(false);
   const [selectedMultiClassCodes, setSelectedMultiClassCodes] = useState<string[]>([]);
+  const [schoolClassSelectFilterInEnrollModal, setSchoolClassSelectFilterInEnrollModal] = useState('ALL');
+
+  // Modal Đăng ký học theo Lớp trường học (VD: 12TN1 – THPT Thanh Hoà)
+  const [isBatchSchoolEnrollOpen, setIsBatchSchoolEnrollOpen] = useState(false);
+  const [batchSchoolClassKey, setBatchSchoolClassKey] = useState('');
+  const [batchSelectedStudentCodes, setBatchSelectedStudentCodes] = useState<string[]>([]);
+  const [batchSelectedClassCodes, setBatchSelectedClassCodes] = useState<string[]>([]);
+  const [batchEnrollDate, setBatchEnrollDate] = useState(getTodayISO());
+  const [batchFeeStartDate, setBatchFeeStartDate] = useState(getTodayISO());
+  const [batchUseCustomFee, setBatchUseCustomFee] = useState(false);
+  const [batchCustomFeePerSession, setBatchCustomFeePerSession] = useState(50000);
 
   // Modal Báo nghỉ giữa khoá & Chốt buổi học thực tế
   const [stopEnrollTarget, setStopEnrollTarget] = useState<Enrollment | null>(null);
@@ -127,6 +140,164 @@ export const StudentsAndEnrollmentsView: React.FC<{ mode: 'STUDENTS' | 'ENROLLME
     }
   };
 
+  // Tự động phân loại theo Lớp của trường học và Trường học sinh đang học
+  const schoolClassGroups = useMemo(() => {
+    const map = new Map<string, { schoolClass: string; school: string; students: Student[] }>();
+    db.students.forEach((s) => {
+      const cls = (s.schoolClass || 'Khác').trim();
+      const sch = (s.school || 'Chưa rõ trường').trim();
+      const key = `${cls}___${sch}`;
+      if (!map.has(key)) {
+        map.set(key, { schoolClass: cls, school: sch, students: [] });
+      }
+      map.get(key)!.students.push(s);
+    });
+
+    return Array.from(map.entries())
+      .map(([key, item]) => {
+        const enrolled = item.students.filter((st) =>
+          db.enrollments.some((e) => e.studentCode === st.code && e.status === 'DANG_HOC')
+        ).length;
+        return {
+          key,
+          schoolClass: item.schoolClass,
+          school: item.school,
+          label: `Lớp ${item.schoolClass} – Trường ${item.school}`,
+          shortLabel: `${item.schoolClass} (${item.school})`,
+          students: item.students,
+          studentCount: item.students.length,
+          enrolledCount: enrolled,
+          unenrolledCount: item.students.length - enrolled,
+        };
+      })
+      .sort((a, b) => {
+        const classComp = a.schoolClass.localeCompare(b.schoolClass, 'vi', { numeric: true });
+        if (classComp !== 0) return classComp;
+        return a.school.localeCompare(b.school, 'vi');
+      });
+  }, [db.students, db.enrollments]);
+
+  const handleOpenBatchSchoolEnroll = (targetGroupKey?: string) => {
+    if (schoolClassGroups.length === 0) {
+      notify('Chưa có học sinh nào trong cơ sở dữ liệu để đăng ký.', 'WARNING');
+      return;
+    }
+    const chosenKey =
+      targetGroupKey ||
+      (schoolClassFilter !== 'ALL' ? schoolClassFilter : schoolClassGroups[0]?.key);
+    const chosenGroup =
+      schoolClassGroups.find((g) => g.key === chosenKey) || schoolClassGroups[0];
+
+    setBatchSchoolClassKey(chosenGroup.key);
+    setBatchSelectedStudentCodes(chosenGroup.students.map((s) => s.code));
+
+    // Gợi ý lớp trung tâm tương ứng với khối học (VD: 12TN1 -> TOAN12A, VAN12A...)
+    const gradeMatch = chosenGroup.schoolClass.match(/\d+/);
+    const gradeNum = gradeMatch ? gradeMatch[0] : '';
+    let initialClassCodes: string[] = [];
+    if (gradeNum) {
+      const matched = db.classes.filter(
+        (c) =>
+          c.grade.includes(gradeNum) ||
+          c.name.includes(gradeNum) ||
+          c.code.includes(gradeNum)
+      );
+      if (matched.length > 0) {
+        initialClassCodes = matched.map((c) => c.code);
+      }
+    }
+    if (initialClassCodes.length === 0 && db.classes.length > 0) {
+      initialClassCodes = [db.classes[0].code];
+    }
+
+    setBatchSelectedClassCodes(initialClassCodes);
+    setBatchEnrollDate(getTodayISO());
+    setBatchFeeStartDate(getTodayISO());
+    setBatchUseCustomFee(false);
+    setBatchCustomFeePerSession(50000);
+    setIsBatchSchoolEnrollOpen(true);
+  };
+
+  const handleSelectBatchSchoolClass = (key: string) => {
+    setBatchSchoolClassKey(key);
+    const group = schoolClassGroups.find((g) => g.key === key);
+    if (group) {
+      setBatchSelectedStudentCodes(group.students.map((s) => s.code));
+      const gradeMatch = group.schoolClass.match(/\d+/);
+      const gradeNum = gradeMatch ? gradeMatch[0] : '';
+      if (gradeNum) {
+        const matched = db.classes.filter(
+          (c) =>
+            c.grade.includes(gradeNum) ||
+            c.name.includes(gradeNum) ||
+            c.code.includes(gradeNum)
+        );
+        if (matched.length > 0) {
+          setBatchSelectedClassCodes(matched.map((c) => c.code));
+        }
+      }
+    }
+  };
+
+  const toggleBatchStudentCode = (code: string) => {
+    setBatchSelectedStudentCodes((prev) =>
+      prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]
+    );
+  };
+
+  const toggleBatchCenterClassCode = (code: string) => {
+    setBatchSelectedClassCodes((prev) =>
+      prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]
+    );
+  };
+
+  const handleConfirmBatchSchoolEnroll = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (batchSelectedStudentCodes.length === 0) {
+      notify('Vui lòng chọn ít nhất 1 học sinh trong lớp trường để đăng ký.', 'WARNING');
+      return;
+    }
+    if (batchSelectedClassCodes.length === 0) {
+      notify('Vui lòng tích chọn ít nhất 1 môn học / lớp học thêm tại trung tâm.', 'WARNING');
+      return;
+    }
+
+    const currentGroup = schoolClassGroups.find((g) => g.key === batchSchoolClassKey);
+    const newEnrollments: Enrollment[] = [];
+
+    batchSelectedStudentCodes.forEach((stCode, stIdx) => {
+      batchSelectedClassCodes.forEach((clsCode, clsIdx) => {
+        const centerClass = db.classes.find((c) => c.code === clsCode);
+        const unitFee = batchUseCustomFee
+          ? batchCustomFeePerSession
+          : centerClass?.feePerSession || 50000;
+
+        newEnrollments.push({
+          id: `ENR-${Date.now()}-${stIdx + 1}-${clsIdx + 1}`,
+          studentCode: stCode,
+          classCode: clsCode,
+          enrollmentDate: batchEnrollDate,
+          feeStartDate: batchFeeStartDate,
+          appliedFeePerSession: unitFee,
+          discountPercent: 0,
+          discountAmount: 0,
+          status: 'DANG_HOC',
+        });
+      });
+    });
+
+    const addedCount = saveEnrollmentsBatch(newEnrollments);
+    if (addedCount > 0) {
+      setIsBatchSchoolEnrollOpen(false);
+      if (currentGroup) {
+        setSchoolClassFilter(currentGroup.key);
+      }
+      if (batchSelectedClassCodes.length === 1) {
+        setClassFilter(batchSelectedClassCodes[0]);
+      }
+    }
+  };
+
   const emptyStudent: Student = {
     code: '',
     fullName: '',
@@ -162,6 +333,12 @@ export const StudentsAndEnrollmentsView: React.FC<{ mode: 'STUDENTS' | 'ENROLLME
 
   const filteredStudents = useMemo(() => {
     return db.students.filter((s) => {
+      if (schoolClassFilter !== 'ALL') {
+        const [targetClass, targetSchool] = schoolClassFilter.split('___');
+        if (s.schoolClass !== targetClass || s.school !== targetSchool) {
+          return false;
+        }
+      }
       if (statusFilter === 'CHUA_DANG_KY_LOP') {
         const inAny = db.enrollments.some(
           (e) => e.studentCode === s.code && e.status === 'DANG_HOC'
@@ -183,31 +360,43 @@ export const StudentsAndEnrollmentsView: React.FC<{ mode: 'STUDENTS' | 'ENROLLME
           s.fullName.toLowerCase().includes(q) ||
           s.parentName.toLowerCase().includes(q) ||
           s.phone.includes(q) ||
-          s.school.toLowerCase().includes(q);
+          s.school.toLowerCase().includes(q) ||
+          s.schoolClass.toLowerCase().includes(q);
         if (!match) return false;
       }
       return true;
     });
-  }, [db.students, db.enrollments, statusFilter, classFilter, search]);
+  }, [db.students, db.enrollments, schoolClassFilter, statusFilter, classFilter, search]);
 
   const filteredEnrollments = useMemo(() => {
     return db.enrollments.filter((e) => {
+      const st = db.students.find((s) => s.code === e.studentCode);
+      if (schoolClassFilter !== 'ALL') {
+        if (!st) return false;
+        const [targetClass, targetSchool] = schoolClassFilter.split('___');
+        if (st.schoolClass !== targetClass || st.school !== targetSchool) {
+          return false;
+        }
+      }
       if (classFilter !== 'ALL' && e.classCode !== classFilter) return false;
       if (statusFilter !== 'ALL' && e.status !== statusFilter) return false;
       if (search.trim()) {
         const q = search.toLowerCase();
-        const st = db.students.find((s) => s.code === e.studentCode);
         const cls = db.classes.find((c) => c.code === e.classCode);
         const match =
           e.studentCode.toLowerCase().includes(q) ||
           e.classCode.toLowerCase().includes(q) ||
-          (st && st.fullName.toLowerCase().includes(q)) ||
+          (st && (
+            st.fullName.toLowerCase().includes(q) ||
+            st.school.toLowerCase().includes(q) ||
+            st.schoolClass.toLowerCase().includes(q)
+          )) ||
           (cls && cls.name.toLowerCase().includes(q));
         if (!match) return false;
       }
       return true;
     });
-  }, [db.enrollments, db.students, db.classes, classFilter, statusFilter, search]);
+  }, [db.enrollments, db.students, db.classes, schoolClassFilter, classFilter, statusFilter, search]);
 
   const detailStudent =
     db.students.find((s) => s.code === selectedStudentCodeForDetail) || null;
@@ -493,6 +682,14 @@ export const StudentsAndEnrollmentsView: React.FC<{ mode: 'STUDENTS' | 'ENROLLME
             Xuất Excel
           </button>
 
+          <button
+            onClick={() => handleOpenBatchSchoolEnroll()}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-[#008653] px-3.5 py-2 text-sm font-bold text-white hover:bg-[#006B42] shadow-sm transition"
+          >
+            <GraduationCap className="h-4 w-4" />
+            <span>Đăng ký theo Lớp trường (12TN1, THPT...)</span>
+          </button>
+
           {mode === 'STUDENTS' ? (
             <button
               onClick={handleOpenAddStudent}
@@ -513,6 +710,94 @@ export const StudentsAndEnrollmentsView: React.FC<{ mode: 'STUDENTS' | 'ENROLLME
         </div>
       </div>
 
+      {/* Khung Tự động phân theo Lớp của trường & Đăng ký môn học thêm */}
+      <div className="rounded-xl border border-[#D4E8DB] bg-linear-to-r from-[#F2FAF5] via-white to-[#F2FAF5]/60 p-4 shadow-xs">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-2.5">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#00543C] text-white shadow-xs">
+              <GraduationCap className="h-5 w-5" />
+            </div>
+            <div>
+              <h3 className="font-bold text-base text-[#00543C]">
+                Tự động phân theo Lớp trường học & Đăng ký môn học thêm ({schoolClassGroups.length} lớp trường)
+              </h3>
+              <p className="text-xs text-[#173B2C]/75">
+                Sau khi tải hồ sơ lên, hệ thống tự động gom nhóm theo từng Lớp trường (VD: 12TN1 – THPT Thanh Hoà). Chỉ cần chọn lớp trường để lọc danh sách hoặc tích chọn các môn học sinh muốn học thêm ở trung tâm.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => handleOpenBatchSchoolEnroll()}
+            className="inline-flex items-center gap-1.5 rounded bg-[#008653] px-3.5 py-1.5 text-xs font-bold text-white hover:bg-[#006B42] shadow-xs"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Đăng ký học cho cả lớp trường
+          </button>
+        </div>
+
+        {/* Danh sách các thẻ lớp trường */}
+        <div className="flex flex-wrap items-center gap-2 pt-1">
+          <button
+            type="button"
+            onClick={() => setSchoolClassFilter('ALL')}
+            className={`rounded-lg px-3 py-1.5 text-xs font-bold transition flex items-center gap-1.5 ${
+              schoolClassFilter === 'ALL'
+                ? 'bg-[#00543C] text-white shadow-xs'
+                : 'bg-white text-gray-700 border border-[#D4E8DB] hover:bg-[#F2FAF5]'
+            }`}
+          >
+            <span>Tất cả lớp trường</span>
+            <span
+              className={`rounded-full px-1.5 py-0.2 text-[10px] font-bold ${
+                schoolClassFilter === 'ALL' ? 'bg-white/20 text-white' : 'bg-gray-100 text-gray-700'
+              }`}
+            >
+              {db.students.length} HS
+            </span>
+          </button>
+
+          {schoolClassGroups.map((group) => {
+            const isSelected = schoolClassFilter === group.key;
+            return (
+              <div
+                key={group.key}
+                className={`group flex items-center rounded-lg border text-xs font-bold transition ${
+                  isSelected
+                    ? 'border-[#008653] bg-white text-[#00543C] shadow-xs ring-1 ring-[#008653]'
+                    : 'border-[#D4E8DB] bg-white text-gray-700 hover:border-[#008653]/60'
+                }`}
+              >
+                <button
+                  type="button"
+                  onClick={() => setSchoolClassFilter(isSelected ? 'ALL' : group.key)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-left"
+                >
+                  <span className="text-[#008653] font-bold">Lớp {group.schoolClass}</span>
+                  <span className="text-gray-500 font-normal truncate max-w-[130px] text-[11px]">
+                    ({group.school})
+                  </span>
+                  <span className="rounded-full bg-[#D4E8DB] px-1.5 py-0.2 text-[10px] font-bold text-[#00543C]">
+                    {group.studentCount} HS
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleOpenBatchSchoolEnroll(group.key);
+                  }}
+                  title={`Đăng ký các môn học thêm tại trung tâm cho cả lớp ${group.schoolClass} (${group.school})`}
+                  className="border-l border-[#D4E8DB] px-2 py-1.5 text-[#008653] hover:bg-[#F2FAF5] rounded-r-lg"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
       {/* Bộ lọc */}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[#D4E8DB] bg-white p-4 shadow-xs">
         <div className="relative min-w-[260px] flex-1">
@@ -521,17 +806,29 @@ export const StudentsAndEnrollmentsView: React.FC<{ mode: 'STUDENTS' | 'ENROLLME
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Tìm theo mã học viên, họ tên, phụ huynh, SĐT, trường học..."
+            placeholder="Tìm theo mã học viên, họ tên, phụ huynh, SĐT, trường học, lớp trường..."
             className="w-full rounded border border-[#D4E8DB] py-1.5 pl-9 pr-3 text-sm focus:border-[#008653] focus:outline-none"
           />
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <select
+            value={schoolClassFilter}
+            onChange={(e) => setSchoolClassFilter(e.target.value)}
+            className="rounded border border-[#D4E8DB] bg-white px-3 py-1.5 text-sm font-bold text-[#00543C]"
+          >
+            <option value="ALL">Tất cả lớp trường học</option>
+            {schoolClassGroups.map((g) => (
+              <option key={g.key} value={g.key}>
+                Lớp {g.schoolClass} – {g.school} ({g.studentCount} HS)
+              </option>
+            ))}
+          </select>
+          <select
             value={classFilter}
             onChange={(e) => setClassFilter(e.target.value)}
             className="rounded border border-[#D4E8DB] bg-white px-3 py-1.5 text-sm font-bold"
           >
-            <option value="ALL">Tất cả lớp học</option>
+            <option value="ALL">Tất cả lớp trung tâm</option>
             {db.classes.map((c) => (
               <option key={c.code} value={c.code}>
                 {c.code} – {c.name}
@@ -1038,8 +1335,8 @@ export const StudentsAndEnrollmentsView: React.FC<{ mode: 'STUDENTS' | 'ENROLLME
             </div>
             <form onSubmit={handleEnrollSubmit} className="space-y-4 p-6">
               <div>
-                <div className="flex flex-wrap items-center justify-between gap-1">
-                  <label className="block text-sm font-bold">Chọn Học viên *</label>
+                <div className="flex flex-wrap items-center justify-between gap-1 mb-1">
+                  <label className="block text-sm font-bold text-[#00543C]">Chọn Học viên *</label>
                   {unenrolledStudents.length > 0 && !isEditEnroll && (
                     <button
                       type="button"
@@ -1055,6 +1352,54 @@ export const StudentsAndEnrollmentsView: React.FC<{ mode: 'STUDENTS' | 'ENROLLME
                     </button>
                   )}
                 </div>
+
+                {!isEditEnroll && (
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-[#F2FAF5] p-2 text-xs border border-[#D4E8DB]">
+                    <div className="flex items-center gap-1.5 font-bold text-[#00543C]">
+                      <span>Lọc theo Lớp trường:</span>
+                      <select
+                        value={schoolClassSelectFilterInEnrollModal}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setSchoolClassSelectFilterInEnrollModal(val);
+                          if (val !== 'ALL') {
+                            const [tClass, tSchool] = val.split('___');
+                            const firstSt = db.students.find(
+                              (s) => s.schoolClass === tClass && s.school === tSchool
+                            );
+                            if (firstSt) {
+                              setEnrollForm((prev) => ({ ...prev, studentCode: firstSt.code }));
+                            }
+                          }
+                        }}
+                        className="rounded border border-[#D4E8DB] bg-white px-2 py-1 text-xs font-bold"
+                      >
+                        <option value="ALL">Tất cả lớp trường</option>
+                        {schoolClassGroups.map((g) => (
+                          <option key={g.key} value={g.key}>
+                            Lớp {g.schoolClass} – {g.school} ({g.studentCount} HS)
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsEnrollModalOpen(false);
+                        handleOpenBatchSchoolEnroll(
+                          schoolClassSelectFilterInEnrollModal !== 'ALL'
+                            ? schoolClassSelectFilterInEnrollModal
+                            : undefined
+                        );
+                      }}
+                      className="inline-flex items-center gap-1 font-bold text-[#008653] hover:underline"
+                    >
+                      <GraduationCap className="h-3.5 w-3.5" />
+                      <span>Đăng ký cùng lúc cho cả lớp trường này</span>
+                    </button>
+                  </div>
+                )}
+
                 <select
                   required
                   disabled={isEditEnroll}
@@ -1064,16 +1409,22 @@ export const StudentsAndEnrollmentsView: React.FC<{ mode: 'STUDENTS' | 'ENROLLME
                   }
                   className="mt-1 w-full rounded border border-[#D4E8DB] px-3 py-2 font-bold"
                 >
-                  {db.students.map((s) => {
-                    const hasEnrolls = db.enrollments.some(
-                      (e) => e.studentCode === s.code && e.status === 'DANG_HOC'
-                    );
-                    return (
-                      <option key={s.code} value={s.code}>
-                        {s.code} – {s.fullName} ({hasEnrolls ? 'Đã có lớp' : 'Chưa có lớp'}) – Trường {s.school} (Lớp {s.schoolClass})
-                      </option>
-                    );
-                  })}
+                  {db.students
+                    .filter((s) => {
+                      if (isEditEnroll || schoolClassSelectFilterInEnrollModal === 'ALL') return true;
+                      const [tClass, tSchool] = schoolClassSelectFilterInEnrollModal.split('___');
+                      return s.schoolClass === tClass && s.school === tSchool;
+                    })
+                    .map((s) => {
+                      const hasEnrolls = db.enrollments.some(
+                        (e) => e.studentCode === s.code && e.status === 'DANG_HOC'
+                      );
+                      return (
+                        <option key={s.code} value={s.code}>
+                          {s.code} – {s.fullName} ({hasEnrolls ? 'Đã có lớp' : 'Chưa có lớp'}) – Trường {s.school} (Lớp {s.schoolClass})
+                        </option>
+                      );
+                    })}
                 </select>
               </div>
 
@@ -1815,6 +2166,355 @@ export const StudentsAndEnrollmentsView: React.FC<{ mode: 'STUDENTS' | 'ENROLLME
                 Xác nhận xoá
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Đăng ký học theo Lớp trường học (VD: 12TN1 – THPT Thanh Hoà) */}
+      {isBatchSchoolEnrollOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-xs">
+          <div className="flex max-h-[92vh] w-full max-w-4xl flex-col rounded-xl bg-white shadow-2xl">
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-[#008653]/30 bg-[#00543C] px-6 py-4 rounded-t-xl text-white">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-white/20 text-white">
+                  <GraduationCap className="h-6 w-6" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold">
+                    Đăng ký học theo Lớp trường học sinh đang học
+                  </h3>
+                  <p className="text-xs text-white/80">
+                    Chỉ cần chọn Lớp trường (VD: 12TN1 – THPT Thanh Hoà) và tích chọn các môn học sinh muốn học thêm ở trung tâm
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsBatchSchoolEnrollOpen(false)}
+                className="text-white/70 hover:text-white"
+              >
+                <X className="h-6 w-6" />
+              </button>
+            </div>
+
+            {/* Content */}
+            <form onSubmit={handleConfirmBatchSchoolEnroll} className="flex-1 overflow-y-auto p-6 space-y-6">
+              {/* Bước 1: Chọn Lớp trường & Danh sách học sinh */}
+              <div className="rounded-xl border border-[#D4E8DB] bg-[#F2FAF5]/50 p-4 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <label className="block text-sm font-bold text-[#00543C]">
+                    1. Chọn Lớp học sinh đang học trên trường *
+                  </label>
+                  <span className="text-xs text-[#173B2C]/70">
+                    Hệ thống tự động gom nhóm từ hồ sơ học viên đã tải lên
+                  </span>
+                </div>
+
+                <select
+                  required
+                  value={batchSchoolClassKey}
+                  onChange={(e) => handleSelectBatchSchoolClass(e.target.value)}
+                  className="w-full rounded-lg border border-[#008653] bg-white px-3.5 py-2.5 font-bold text-[#00543C] shadow-xs text-base"
+                >
+                  {schoolClassGroups.map((g) => (
+                    <option key={g.key} value={g.key}>
+                      Lớp {g.schoolClass} – Trường {g.school} ({g.studentCount} học sinh – {g.unenrolledCount} chưa có lớp, {g.enrolledCount} đang học)
+                    </option>
+                  ))}
+                </select>
+
+                {/* Danh sách học sinh thuộc lớp trường đã chọn */}
+                {(() => {
+                  const currentGroup = schoolClassGroups.find((g) => g.key === batchSchoolClassKey);
+                  if (!currentGroup) return null;
+
+                  return (
+                    <div className="mt-2 space-y-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                        <span className="font-bold text-[#173B2C]">
+                          Danh sách học sinh lớp {currentGroup.schoolClass} ({batchSelectedStudentCodes.length}/{currentGroup.students.length} đã chọn):
+                        </span>
+                        <div className="flex items-center gap-3">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setBatchSelectedStudentCodes(currentGroup.students.map((s) => s.code))
+                            }
+                            className="font-bold text-[#008653] hover:underline"
+                          >
+                            Chọn tất cả ({currentGroup.students.length})
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const unenrolledInClass = currentGroup.students
+                                .filter(
+                                  (s) =>
+                                    !db.enrollments.some(
+                                      (e) => e.studentCode === s.code && e.status === 'DANG_HOC'
+                                    )
+                                )
+                                .map((s) => s.code);
+                              setBatchSelectedStudentCodes(unenrolledInClass);
+                            }}
+                            className="font-bold text-amber-700 hover:underline"
+                          >
+                            Chỉ chọn HS chưa có lớp ({currentGroup.unenrolledCount})
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setBatchSelectedStudentCodes([])}
+                            className="font-bold text-red-600 hover:underline"
+                          >
+                            Bỏ chọn
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="max-h-48 overflow-y-auto rounded-lg border border-[#D4E8DB] bg-white">
+                        <table className="w-full border-collapse text-left text-xs">
+                          <thead className="bg-[#F2FAF5] sticky top-0 border-b border-[#D4E8DB]">
+                            <tr>
+                              <th className="p-2 w-8 text-center">#</th>
+                              <th className="p-2">Mã HV</th>
+                              <th className="p-2">Họ và tên</th>
+                              <th className="p-2">Phụ huynh & SĐT</th>
+                              <th className="p-2">Môn trung tâm đang học</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-[#D4E8DB]">
+                            {currentGroup.students.map((s) => {
+                              const isChecked = batchSelectedStudentCodes.includes(s.code);
+                              const stEnrolls = db.enrollments.filter(
+                                (e) => e.studentCode === s.code && e.status === 'DANG_HOC'
+                              );
+
+                              return (
+                                <tr
+                                  key={s.code}
+                                  onClick={() => toggleBatchStudentCode(s.code)}
+                                  className={`cursor-pointer transition-colors ${
+                                    isChecked ? 'bg-[#F2FAF5]/80' : 'hover:bg-gray-50'
+                                  }`}
+                                >
+                                  <td className="p-2 text-center" onClick={(e) => e.stopPropagation()}>
+                                    <input
+                                      type="checkbox"
+                                      checked={isChecked}
+                                      onChange={() => toggleBatchStudentCode(s.code)}
+                                      className="h-4 w-4 rounded text-[#008653] focus:ring-[#008653]"
+                                    />
+                                  </td>
+                                  <td className="p-2 font-bold text-gray-900">{s.code}</td>
+                                  <td className="p-2 font-bold text-[#00543C]">{s.fullName}</td>
+                                  <td className="p-2 text-gray-600">
+                                    {s.parentName} ({s.phone})
+                                  </td>
+                                  <td className="p-2">
+                                    {stEnrolls.length === 0 ? (
+                                      <span className="text-amber-700 italic">Chưa đăng ký môn nào</span>
+                                    ) : (
+                                      <span className="font-bold text-[#008653]">
+                                        {stEnrolls.map((e) => e.classCode).join(', ')}
+                                      </span>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* Bước 2: Tích chọn các môn học thêm ở trung tâm */}
+              <div className="rounded-xl border border-[#D4E8DB] bg-white p-4 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <label className="block text-sm font-bold text-[#00543C]">
+                      2. Tích chọn các môn học sinh muốn học thêm ở trung tâm *
+                    </label>
+                    <p className="text-xs text-[#173B2C]/70">
+                      Học sinh được phép tích chọn cùng lúc nhiều môn (Toán, Văn, Anh, Lý...). Sau khi đăng ký thành công, danh sách sẽ tự động đưa về các lớp và kết xuất thành file Excel gắn với giáo viên.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-3 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => setBatchSelectedClassCodes(db.classes.map((c) => c.code))}
+                      className="font-bold text-[#008653] hover:underline"
+                    >
+                      Chọn tất cả ({db.classes.length} lớp)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setBatchSelectedClassCodes([])}
+                      className="font-bold text-red-600 hover:underline"
+                    >
+                      Bỏ chọn
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 max-h-56 overflow-y-auto p-1">
+                  {db.classes.map((c) => {
+                    const isChecked = batchSelectedClassCodes.includes(c.code);
+                    const teacher = db.teachers.find((t) => t.code === c.teacherCode);
+                    const activeCount = db.enrollments.filter(
+                      (e) => e.classCode === c.code && e.status === 'DANG_HOC'
+                    ).length;
+
+                    return (
+                      <label
+                        key={c.code}
+                        className={`flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition ${
+                          isChecked
+                            ? 'border-[#008653] bg-[#F2FAF5] shadow-xs'
+                            : 'border-[#D4E8DB] bg-white hover:border-[#008653]/60'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={() => toggleBatchCenterClassCode(c.code)}
+                          className="mt-1 h-4 w-4 rounded text-[#008653] focus:ring-[#008653]"
+                        />
+                        <div className="flex-1 text-xs">
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold text-sm text-[#00543C]">
+                              {c.name} ({c.code})
+                            </span>
+                            <span className="font-bold text-[#008653] tabular-nums">
+                              {formatCurrency(c.feePerSession)}/b
+                            </span>
+                          </div>
+                          <div className="text-gray-700 mt-0.5">
+                            Môn: <strong>{c.subject}</strong> · Khối: {c.grade}
+                          </div>
+                          <div className="text-gray-600 mt-0.5">
+                            GV phụ trách: <strong>{teacher?.fullName || 'Đội ngũ GV theo ca'}</strong>
+                          </div>
+                          <div className="text-[11px] text-gray-500 mt-1 flex justify-between">
+                            <span>Phòng: {c.roomCode}</span>
+                            <span>Sĩ số: {activeCount}/{c.maxStudents}</span>
+                          </div>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Bước 3: Cấu hình ngày & đơn giá */}
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 rounded-xl border border-[#D4E8DB] bg-[#F2FAF5]/50 p-4">
+                <div>
+                  <label className="block text-xs font-bold text-gray-700">Ngày đăng ký *</label>
+                  <input
+                    type="date"
+                    required
+                    value={batchEnrollDate}
+                    onChange={(e) => setBatchEnrollDate(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-[#D4E8DB] bg-white px-3 py-2 text-sm font-bold"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-700">Ngày bắt đầu tính phí *</label>
+                  <input
+                    type="date"
+                    required
+                    value={batchFeeStartDate}
+                    onChange={(e) => setBatchFeeStartDate(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-[#D4E8DB] bg-white px-3 py-2 text-sm font-bold"
+                  />
+                </div>
+
+                <div className="sm:col-span-2 pt-1 border-t border-[#D4E8DB]">
+                  <div className="flex flex-wrap items-center gap-4 text-xs font-bold text-[#173B2C]">
+                    <span>Quy tắc đơn giá:</span>
+                    <label className="flex items-center gap-1.5 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="feeRule"
+                        checked={!batchUseCustomFee}
+                        onChange={() => setBatchUseCustomFee(false)}
+                        className="text-[#008653]"
+                      />
+                      <span>Theo đơn giá từng lớp trung tâm (50.000 đ/buổi cho nhóm VH hoặc đơn giá TATT)</span>
+                    </label>
+                    <label className="flex items-center gap-1.5 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="feeRule"
+                        checked={batchUseCustomFee}
+                        onChange={() => setBatchUseCustomFee(true)}
+                        className="text-[#008653]"
+                      />
+                      <span>Đồng giá cả đợt</span>
+                    </label>
+                  </div>
+                  {batchUseCustomFee && (
+                    <div className="mt-2 flex items-center gap-2 max-w-xs">
+                      <span className="text-xs text-gray-600">Đơn giá:</span>
+                      <input
+                        type="number"
+                        min={0}
+                        step={5000}
+                        value={batchCustomFeePerSession}
+                        onChange={(e) => setBatchCustomFeePerSession(Number(e.target.value))}
+                        className="w-full rounded border border-[#D4E8DB] bg-white px-3 py-1.5 text-xs font-bold tabular-nums"
+                      />
+                      <span className="text-xs text-gray-500">đ/buổi</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Tóm tắt */}
+              <div className="rounded-xl border-2 border-[#008653] bg-[#F2FAF5] p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                  <div>
+                    <div className="font-bold text-[#00543C]">
+                      Tổng kết ghi danh theo lớp trường:
+                    </div>
+                    <div className="text-xs text-[#173B2C]/80 mt-0.5">
+                      <strong>{batchSelectedStudentCodes.length}</strong> học sinh ×{' '}
+                      <strong>{batchSelectedClassCodes.length}</strong> môn học ={' '}
+                      <strong className="text-[#008653] text-sm">
+                        {batchSelectedStudentCodes.length * batchSelectedClassCodes.length} lượt đăng ký
+                      </strong>
+                    </div>
+                  </div>
+                  <div className="text-right text-xs text-gray-500">
+                    Sau khi xác nhận, danh sách lớp sẽ tự động cập nhật và sẵn sàng xuất file Excel gắn với giáo viên
+                  </div>
+                </div>
+              </div>
+
+              {/* Footer */}
+              <div className="flex justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setIsBatchSchoolEnrollOpen(false)}
+                  className="rounded-lg border border-gray-300 bg-white px-5 py-2 font-bold text-gray-700 hover:bg-gray-100"
+                >
+                  Huỷ bỏ
+                </button>
+                <button
+                  type="submit"
+                  disabled={
+                    batchSelectedStudentCodes.length === 0 || batchSelectedClassCodes.length === 0
+                  }
+                  className="flex items-center gap-2 rounded-lg bg-[#008653] px-6 py-2 font-bold text-white shadow-sm hover:bg-[#006B42] disabled:opacity-50 disabled:cursor-not-allowed transition"
+                >
+                  <GraduationCap className="h-4 w-4" />
+                  Xác nhận đăng ký học cho cả lớp ({batchSelectedStudentCodes.length * batchSelectedClassCodes.length} lượt)
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
