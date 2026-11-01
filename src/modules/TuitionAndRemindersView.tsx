@@ -520,8 +520,6 @@ export const TuitionAndRemindersView: React.FC<{
         note: `Tự động tính: ${calcWeeks} tuần × ${customShiftsPerWeek} ca/tuần = ${calcTotalSessions} ca × ${formatCurrency(customFeePerSession)} = ${formatCurrency(netAmount)}`,
       };
 
-      createReceivablesBatch([newRec]);
-
       const allocation: ReceiptAllocation = {
         id: `ALLOC-${Date.now()}-${newRecId}`,
         receiptId,
@@ -551,7 +549,7 @@ export const TuitionAndRemindersView: React.FC<{
         createdAt: new Date().toISOString(),
       };
 
-      createPaymentReceipt(newReceipt);
+      createPaymentReceipt(newReceipt, newRec);
       setIsReceiptModalOpen(false);
       setPrintableReceipt(newReceipt);
       notify(

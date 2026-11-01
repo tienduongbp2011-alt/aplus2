@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import {
   AppDatabase,
   Assignment,
@@ -94,7 +94,7 @@ interface AppContextValue {
   submitAssignment: (submission: AssignmentSubmission) => void;
   gradeSubmission: (submission: AssignmentSubmission, publishScores?: boolean) => void;
   createReceivablesBatch: (receivables: TuitionReceivable[]) => void;
-  createPaymentReceipt: (receipt: PaymentReceipt) => void;
+  createPaymentReceipt: (receipt: PaymentReceipt, newReceivable?: TuitionReceivable) => void;
   createFinancialAdjustment: (adj: FinancialAdjustment) => void;
   addReminderLog: (log: TuitionReminderLog) => void;
   savePayrollRecord: (payroll: PayrollRecord, isEdit: boolean) => void;
@@ -225,7 +225,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     notify(`Đã chuyển sang vai trò: ${found.fullName}`, 'SUCCESS');
   };
 
+  const lastLocalSaveTimeRef = useRef<number>(0);
+
   const pushDbToSupabase = async (targetDb: AppDatabase, showToastOnSuccess = false) => {
+    lastLocalSaveTimeRef.current = Date.now();
     setSupabaseStatus('SYNCING');
     const res = await saveDatabaseToSupabase(targetDb);
     if (res.ok) {
@@ -257,9 +260,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (res.status === 'CONNECTED') {
       if (res.data && res.data.accounts && res.data.settings) {
         setDb(res.data);
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(res.data));
-        if (res.updatedAt) {
-          localStorage.setItem('APLUS2_LOCAL_UPDATED_AT_V1', res.updatedAt);
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(res.data));
+          if (res.updatedAt) {
+            localStorage.setItem('APLUS2_LOCAL_UPDATED_AT_V1', res.updatedAt);
+          }
+        } catch {
+          // ignore storage quota
         }
         setSupabaseStatus('CONNECTED');
         setSupabaseLastSync(res.updatedAt || new Date().toISOString());
@@ -287,19 +294,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const remoteCount = remoteData
           ? (remoteData.teachers?.length || 0) +
             (remoteData.classes?.length || 0) +
-            (remoteData.students?.length || 0)
+            (remoteData.students?.length || 0) +
+            (remoteData.enrollments?.length || 0)
           : 0;
         const localCount =
-          (db.teachers?.length || 0) + (db.classes?.length || 0) + (db.students?.length || 0);
+          (db.teachers?.length || 0) +
+          (db.classes?.length || 0) +
+          (db.students?.length || 0) +
+          (db.enrollments?.length || 0);
 
-        // Nếu trên Supabase chưa có dữ liệu, hoặc dữ liệu trên máy người dùng mới hơn / nhiều hơn bản rỗng -> đẩy dữ liệu trên máy lên Supabase
-        if (
+        // Chỉ đẩy dữ liệu từ máy lên Supabase khi:
+        // 1. Supabase chưa có dữ liệu (remoteCount === 0), HOẶC
+        // 2. Dữ liệu trên trình duyệt này mới hơn VÀ có số lượng bản ghi không ít hơn dữ liệu trên Supabase (tránh tab mới chỉ có dữ liệu mẫu ghi đè mất dữ liệu thật trên Supabase)
+        const shouldPushLocal =
           !remoteData ||
           !remoteData.accounts ||
           !remoteData.settings ||
           (remoteCount === 0 && localCount > 0) ||
-          (localUpdatedAt && remoteUpdatedAt && localUpdatedAt > remoteUpdatedAt)
-        ) {
+          (Boolean(localUpdatedAt) &&
+            Boolean(remoteUpdatedAt) &&
+            localUpdatedAt > remoteUpdatedAt &&
+            localCount >= remoteCount);
+
+        if (shouldPushLocal) {
           const saveRes = await saveDatabaseToSupabase(db);
           if (!isMounted) return;
           setSupabaseStatus(saveRes.status);
@@ -307,17 +324,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           setSupabaseLastSync(syncTime);
           localStorage.setItem('APLUS2_LOCAL_UPDATED_AT_V1', syncTime);
           setSupabaseError(saveRes.errorMessage || null);
-        } else {
+        } else if (remoteData) {
           setDb(remoteData);
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(remoteData));
-          if (remoteUpdatedAt) {
-            localStorage.setItem('APLUS2_LOCAL_UPDATED_AT_V1', remoteUpdatedAt);
+          try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(remoteData));
+            if (remoteUpdatedAt) {
+              localStorage.setItem('APLUS2_LOCAL_UPDATED_AT_V1', remoteUpdatedAt);
+            }
+          } catch {
+            // ignore quota error
           }
           setSupabaseStatus('CONNECTED');
           setSupabaseLastSync(remoteUpdatedAt || new Date().toISOString());
           setSupabaseError(null);
-          // Đồng bộ luôn sang các bảng chi tiết trên Supabase để đảm bảo khớp 100%
-          void saveDatabaseToSupabase(remoteData);
         }
       } else {
         setSupabaseStatus(res.status);
@@ -338,6 +357,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               filter: `id=eq.${SUPABASE_MAIN_ROW_ID}`,
             },
             (payload) => {
+              // Bỏ qua sự kiện dội lại từ chính thao tác lưu vừa thực hiện trên máy này
+              if (Date.now() - lastLocalSaveTimeRef.current < 3500) {
+                return;
+              }
               const newRow = payload.new as { payload?: AppDatabase; updated_at?: string } | undefined;
               if (newRow && newRow.payload && newRow.payload.accounts) {
                 setDb(newRow.payload);
@@ -1059,12 +1082,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     notify(`Đã lập thành công ${newReceivables.length} khoản phải thu học phí.`);
   };
 
-  const createPaymentReceipt = (receipt: PaymentReceipt) => {
+  const createPaymentReceipt = (receipt: PaymentReceipt, newReceivable?: TuitionReceivable) => {
     updateDb(
       (prev) => {
         const today = getTodayISO();
+        const baseReceivables = newReceivable
+          ? [
+              {
+                ...newReceivable,
+                paidAmount: 0,
+                remainingDebt: newReceivable.netAmount,
+                status: 'CHUA_DONG' as TuitionReceivable['status'],
+              },
+              ...prev.receivables.filter((r) => r.id !== newReceivable.id),
+            ]
+          : prev.receivables;
+
         // Cập nhật từng khoản phải thu được phân bổ
-        const updatedReceivables = prev.receivables.map((rec) => {
+        const updatedReceivables = baseReceivables.map((rec) => {
           const matchingAllocs = receipt.allocations.filter((a) => a.receivableId === rec.id);
           if (matchingAllocs.length === 0) return rec;
           const addedPaid = matchingAllocs.reduce((s, a) => s + a.allocatedAmount, 0);

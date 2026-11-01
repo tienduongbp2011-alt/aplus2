@@ -246,278 +246,325 @@ ALTER TABLE public.payrolls DISABLE ROW LEVEL SECURITY;
 ALTER TABLE public.cashflows DISABLE ROW LEVEL SECURITY;
 ALTER TABLE public.accounts DISABLE ROW LEVEL SECURITY;`;
 
+let lastSyncedStudentsSignature = '';
+
 async function syncRelationalTablesDirectly(db: AppDatabase, now: string): Promise<void> {
   if (!supabase) return;
 
   try {
+    const tasks: Promise<unknown>[] = [];
+
     // 1. Đồng bộ bảng teachers
-    if (Array.isArray(db.teachers)) {
-      if (db.teachers.length > 0) {
-        await supabase.from('teachers').upsert(
-          db.teachers.map((t) => ({
-            code: t.code,
-            full_name: t.fullName,
-            phone: t.phone || '',
-            email: t.email || '',
-            group_code: t.group,
-            specialty: t.specialty || '',
-            workplace: t.workplace || '',
-            salary_model: t.salaryMethod,
-            salary_rate: t.group === 'VH' ? (t.percentageRate ?? 0) : (t.shiftRate ?? 0),
-            status: t.status || 'ACTIVE',
-            note: t.note || '',
-            updated_at: now,
-          })),
-          { onConflict: 'code' }
-        );
-      }
+    if (Array.isArray(db.teachers) && db.teachers.length > 0) {
+      tasks.push(
+        Promise.resolve(
+          supabase.from('teachers').upsert(
+            db.teachers.map((t) => ({
+              code: t.code,
+              full_name: t.fullName,
+              phone: t.phone || '',
+              email: t.email || '',
+              group_code: t.group,
+              specialty: t.specialty || '',
+              workplace: t.workplace || '',
+              salary_model: t.salaryMethod,
+              salary_rate: t.group === 'VH' ? (t.percentageRate ?? 0) : (t.shiftRate ?? 0),
+              status: t.status || 'ACTIVE',
+              note: t.note || '',
+              updated_at: now,
+            })),
+            { onConflict: 'code' }
+          )
+        )
+      );
     }
 
-    // 2. Đồng bộ bảng classes (Hỗ trợ cả cấu trúc bảng classes mới và bảng classes sẵn có trên Supabase)
+    // 2. Đồng bộ bảng classes (Tương thích cả cấu trúc (id, data, updated_at) và cấu trúc cột chi tiết)
     if (Array.isArray(db.classes) && db.classes.length > 0) {
-      const resAplus = await supabase.from('classes').upsert(
-        db.classes.map((c) => ({
-          code: c.code,
-          name: c.name,
-          subject: c.subject || '',
-          group_code: c.group,
-          grade: c.grade || '',
-          teacher_code: c.teacherCode || '',
-          start_date: c.startDate || '',
-          end_date: c.endDate || '',
-          fee_per_session: c.feePerSession || 50000,
-          billing_method: c.billingMethod,
-          max_students: c.maxStudents || 25,
-          room_code: c.roomCode || '',
-          status: c.status || 'DANG_HOC',
-          schedule_items: c.recurringSchedule || [],
-          updated_at: now,
-        })),
-        { onConflict: 'code' }
+      tasks.push(
+        (async () => {
+          const resJson = await supabase.from('classes').upsert(
+            db.classes.map((c) => ({
+              id: c.code,
+              data: c,
+              updated_at: now,
+            })),
+            { onConflict: 'id' }
+          );
+          if (resJson.error) {
+            await supabase.from('classes').upsert(
+              db.classes.map((c) => ({
+                code: c.code,
+                name: c.name,
+                subject: c.subject || '',
+                group_code: c.group,
+                grade: c.grade || '',
+                teacher_code: c.teacherCode || '',
+                start_date: c.startDate || '',
+                end_date: c.endDate || '',
+                fee_per_session: c.feePerSession || 50000,
+                billing_method: c.billingMethod,
+                max_students: c.maxStudents || 25,
+                room_code: c.roomCode || '',
+                status: c.status || 'DANG_HOC',
+                schedule_items: c.recurringSchedule || [],
+                updated_at: now,
+              })),
+              { onConflict: 'code' }
+            );
+          }
+        })()
       );
-      if (resAplus.error) {
-        // Bảng classes có cấu trúc (id, name, grade, academic_year, room, homeroom_teacher)
-        await supabase.from('classes').upsert(
-          db.classes.map((c) => ({
-            id: c.code,
-            name: `${c.code} - ${c.name}`,
-            grade: parseInt(String(c.grade).replace(/\D/g, ''), 10) || 12,
-            academic_year: c.startDate
-              ? `${c.startDate}${c.endDate ? ' -> ' + c.endDate : ''}`
-              : '2025-2026',
-            room: c.roomCode || '',
-            homeroom_teacher: c.teacherCode || '',
-          })),
-          { onConflict: 'id' }
-        );
-      }
     }
 
-    // 3. Đồng bộ bảng students (Hỗ trợ cả cấu trúc bảng students mới và bảng students sẵn có trên Supabase)
+    // 3. Đồng bộ bảng students theo lô (chỉ đẩy khi danh sách học viên thay đổi để tăng tốc tối đa)
     if (Array.isArray(db.students) && db.students.length > 0) {
-      const resStudents = await supabase.from('students').upsert(
-        db.students.map((s) => ({
-          code: s.code,
-          full_name: s.fullName,
-          dob: s.dob || null,
-          gender: s.gender || 'Nam',
-          school: s.school || '',
-          school_class: s.schoolClass || '',
-          parent_name: s.parentName || '',
-          phone: s.phone || '',
-          admission_date: s.admissionDate || '',
-          status: s.status || 'DANG_HOC',
-          credit_balance: s.creditBalance || 0,
-          note: s.note || '',
-          updated_at: now,
-        })),
-        { onConflict: 'code' }
-      );
-      if (resStudents.error) {
-        await supabase.from('students').upsert(
-          db.students.map((s) => ({
-            id: s.code,
-            owner_uid: 'aplus2_center',
-            class_id: s.schoolClass || 'APLUS2',
-            student_code: s.code,
-            full_name: s.fullName,
-            dob: s.dob || null,
-            gender: s.gender || 'Nam',
-            group_id: s.schoolClass || 'APLUS2',
-            position: s.school || '',
-            parent_phone: s.phone || '',
-            initial_score: s.creditBalance || 0,
-            status: s.status || 'DANG_HOC',
-            notes: `PH: ${s.parentName || ''} | ${s.note || ''}`.trim(),
-            is_demo: false,
-            updated_at: now,
-          })),
-          { onConflict: 'id' }
+      const firstCode = db.students[0]?.code || '';
+      const lastCode = db.students[db.students.length - 1]?.code || '';
+      const sig = `${db.students.length}:${firstCode}:${lastCode}`;
+      if (sig !== lastSyncedStudentsSignature) {
+        lastSyncedStudentsSignature = sig;
+        tasks.push(
+          (async () => {
+            const chunkSize = 300;
+            for (let i = 0; i < db.students.length; i += chunkSize) {
+              const slice = db.students.slice(i, i + chunkSize);
+              const resJson = await supabase.from('students').upsert(
+                slice.map((s) => ({
+                  id: s.code,
+                  data: s,
+                  school: s.school || '',
+                  school_class: s.schoolClass || '',
+                  updated_at: now,
+                })),
+                { onConflict: 'id' }
+              );
+              if (resJson.error) {
+                await supabase.from('students').upsert(
+                  slice.map((s) => ({
+                    code: s.code,
+                    full_name: s.fullName,
+                    dob: s.dob || null,
+                    gender: s.gender || 'Nam',
+                    school: s.school || '',
+                    school_class: s.schoolClass || '',
+                    parent_name: s.parentName || '',
+                    phone: s.phone || '',
+                    admission_date: s.admissionDate || '',
+                    status: s.status || 'DANG_HOC',
+                    credit_balance: s.creditBalance || 0,
+                    note: s.note || '',
+                    updated_at: now,
+                  })),
+                  { onConflict: 'code' }
+                );
+              }
+            }
+          })()
         );
       }
     }
 
     // 4. Đồng bộ bảng enrollments
     if (Array.isArray(db.enrollments) && db.enrollments.length > 0) {
-      await supabase.from('enrollments').upsert(
-        db.enrollments.map((e) => ({
-          id: e.id,
-          student_code: e.studentCode,
-          class_code: e.classCode,
-          enrollment_date: e.enrollmentDate || '',
-          fee_start_date: e.feeStartDate || '',
-          end_date: e.endDate || null,
-          actual_attended_sessions: e.actualAttendedSessions ?? null,
-          stop_reason: e.stopReason || null,
-          applied_fee_per_session: e.appliedFeePerSession || 50000,
-          discount_percent: e.discountPercent || 0,
-          discount_amount: e.discountAmount || 0,
-          status: e.status || 'DANG_HOC',
-          updated_at: now,
-        })),
-        { onConflict: 'id' }
+      tasks.push(
+        Promise.resolve(
+          supabase.from('enrollments').upsert(
+            db.enrollments.map((e) => ({
+              id: e.id,
+              student_code: e.studentCode,
+              class_code: e.classCode,
+              enrollment_date: e.enrollmentDate || '',
+              fee_start_date: e.feeStartDate || '',
+              end_date: e.endDate || null,
+              actual_attended_sessions: e.actualAttendedSessions ?? null,
+              stop_reason: e.stopReason || null,
+              applied_fee_per_session: e.appliedFeePerSession || 50000,
+              discount_percent: e.discountPercent || 0,
+              discount_amount: e.discountAmount || 0,
+              status: e.status || 'DANG_HOC',
+              updated_at: now,
+            })),
+            { onConflict: 'id' }
+          )
+        )
       );
     }
 
     // 5. Đồng bộ bảng sessions
     if (Array.isArray(db.sessions) && db.sessions.length > 0) {
-      await supabase.from('sessions').upsert(
-        db.sessions.map((s) => ({
-          id: s.id,
-          class_code: s.classCode,
-          date: s.date,
-          shift_id: parseInt(String(s.shiftId).replace(/\D/g, ''), 10) || 1,
-          room_code: s.roomCode || '',
-          teacher_code: s.actualTeacherCode || '',
-          substitute_teacher_code: null,
-          topic: s.topic || s.skillNote || '',
-          status: s.status || 'DU_KIEN',
-          updated_at: now,
-        })),
-        { onConflict: 'id' }
+      tasks.push(
+        Promise.resolve(
+          supabase.from('sessions').upsert(
+            db.sessions.map((s) => ({
+              id: s.id,
+              class_code: s.classCode,
+              date: s.date,
+              shift_id: String(parseInt(String(s.shiftId).replace(/\D/g, ''), 10) || 1),
+              room_code: s.roomCode || '',
+              teacher_code: s.actualTeacherCode || '',
+              substitute_teacher_code: null,
+              topic: s.topic || s.skillNote || '',
+              status: s.status || 'DU_KIEN',
+              updated_at: now,
+            })),
+            { onConflict: 'id' }
+          )
+        )
       );
     }
 
     // 6. Đồng bộ bảng receivables
     if (Array.isArray(db.receivables) && db.receivables.length > 0) {
-      await supabase.from('receivables').upsert(
-        db.receivables.map((r) => ({
-          id: r.id,
-          code: r.code,
-          cycle_name: r.cycleName,
-          student_code: r.studentCode,
-          class_code: r.classCode,
-          enrollment_id: r.enrollmentId,
-          due_date: r.dueDate,
-          session_count: r.sessionCount || 0,
-          unit_price: r.unitPrice || 0,
-          gross_amount: r.grossAmount || 0,
-          discount_amount: r.discountAmount || 0,
-          net_amount: r.netAmount || 0,
-          paid_amount: r.paidAmount || 0,
-          remaining_debt: r.remainingDebt || 0,
-          status: r.status,
-          note: r.note || '',
-          updated_at: now,
-        })),
-        { onConflict: 'id' }
+      tasks.push(
+        Promise.resolve(
+          supabase.from('receivables').upsert(
+            db.receivables.map((r) => ({
+              id: r.id,
+              code: r.code,
+              cycle_name: r.cycleName,
+              student_code: r.studentCode,
+              class_code: r.classCode,
+              enrollment_id: r.enrollmentId,
+              period_start: r.periodStart || '',
+              period_end: r.periodEnd || '',
+              due_date: r.dueDate,
+              session_count: r.sessionCount || 0,
+              unit_price: r.unitPrice || 0,
+              gross_amount: r.grossAmount || 0,
+              discount_amount: r.discountAmount || 0,
+              net_amount: r.netAmount || 0,
+              paid_amount: r.paidAmount || 0,
+              remaining_debt: r.remainingDebt || 0,
+              status: r.status,
+              note: r.note || '',
+              updated_at: now,
+            })),
+            { onConflict: 'id' }
+          )
+        )
       );
     }
 
     // 7. Đồng bộ bảng receipts
     if (Array.isArray(db.receipts) && db.receipts.length > 0) {
-      await supabase.from('receipts').upsert(
-        db.receipts.map((rc) => ({
-          id: rc.id,
-          receipt_number: rc.receiptNumber,
-          student_code: rc.studentCode,
-          payment_date: rc.paymentDate,
-          total_amount: rc.totalAmount || 0,
-          allocated_total: rc.allocatedTotal || 0,
-          unallocated_credit: rc.unallocatedCredit || 0,
-          payment_method: rc.paymentMethod,
-          collector_name: rc.collectorName || '',
-          content: rc.content || '',
-          allocations: rc.allocations || [],
-          updated_at: now,
-        })),
-        { onConflict: 'id' }
+      tasks.push(
+        Promise.resolve(
+          supabase.from('receipts').upsert(
+            db.receipts.map((rc) => ({
+              id: rc.id,
+              receipt_number: rc.receiptNumber,
+              student_code: rc.studentCode,
+              payment_date: rc.paymentDate,
+              total_amount: rc.totalAmount || 0,
+              allocated_total: rc.allocatedTotal || 0,
+              unallocated_credit: rc.unallocatedCredit || 0,
+              payment_method: rc.paymentMethod,
+              collector_name: rc.collectorName || '',
+              payer_name: rc.payerName || '',
+              content: rc.content || '',
+              allocations: rc.allocations || [],
+              updated_at: now,
+            })),
+            { onConflict: 'id' }
+          )
+        )
       );
     }
 
     // 8. Đồng bộ bảng payrolls
     if (Array.isArray(db.payrolls) && db.payrolls.length > 0) {
-      await supabase.from('payrolls').upsert(
-        db.payrolls.map((p) => ({
-          id: p.id,
-          code: p.code,
-          period_name: p.periodName,
-          teacher_code: p.teacherCode,
-          teacher_name: p.teacherName,
-          final_salary: p.finalSalary || 0,
-          paid_amount: p.paidAmount || 0,
-          remaining_payable: p.remainingPayable || 0,
-          status: p.status,
-          line_items: p.lineItems || [],
-          updated_at: now,
-        })),
-        { onConflict: 'id' }
+      tasks.push(
+        Promise.resolve(
+          supabase.from('payrolls').upsert(
+            db.payrolls.map((p) => ({
+              id: p.id,
+              code: p.code,
+              period_name: p.periodName,
+              teacher_code: p.teacherCode,
+              teacher_name: p.teacherName,
+              final_salary: p.finalSalary || 0,
+              paid_amount: p.paidAmount || 0,
+              remaining_payable: p.remainingPayable || 0,
+              status: p.status,
+              line_items: p.lineItems || [],
+              updated_at: now,
+            })),
+            { onConflict: 'id' }
+          )
+        )
       );
     }
 
     // 9. Đồng bộ bảng cashflows
     if (Array.isArray(db.cashflows) && db.cashflows.length > 0) {
-      await supabase.from('cashflows').upsert(
-        db.cashflows.map((cf) => ({
-          id: cf.id,
-          code: cf.code,
-          date: cf.date,
-          type: cf.type,
-          category: cf.category,
-          amount: cf.amount || 0,
-          payment_method: cf.paymentMethod,
-          description: cf.description || '',
-          created_by: cf.createdBy || '',
-          updated_at: now,
-        })),
-        { onConflict: 'id' }
+      tasks.push(
+        Promise.resolve(
+          supabase.from('cashflows').upsert(
+            db.cashflows.map((cf) => ({
+              id: cf.id,
+              code: cf.code,
+              date: cf.date,
+              type: cf.type,
+              category: cf.category,
+              amount: cf.amount || 0,
+              payment_method: cf.paymentMethod,
+              description: cf.description || '',
+              created_by: cf.createdBy || '',
+              updated_at: now,
+            })),
+            { onConflict: 'id' }
+          )
+        )
       );
     }
 
     // 10. Đồng bộ bảng accounts
     if (Array.isArray(db.accounts) && db.accounts.length > 0) {
-      await supabase.from('accounts').upsert(
-        db.accounts.map((acc) => ({
-          id: acc.id,
-          username: acc.username,
-          password: acc.password || '123456',
-          full_name: acc.fullName,
-          role: acc.role,
-          linked_teacher_code: acc.linkedTeacherCode || null,
-          linked_student_code: acc.linkedStudentCode || null,
-          status: acc.status || 'ACTIVE',
-          updated_at: now,
-        })),
-        { onConflict: 'id' }
+      tasks.push(
+        Promise.resolve(
+          supabase.from('accounts').upsert(
+            db.accounts.map((acc) => ({
+              id: acc.id,
+              username: acc.username,
+              password: acc.password || '123456',
+              full_name: acc.fullName,
+              role: acc.role,
+              linked_teacher_code: acc.linkedTeacherCode || null,
+              linked_student_code: acc.linkedStudentCode || null,
+              status: acc.status || 'ACTIVE',
+              updated_at: now,
+            })),
+            { onConflict: 'id' }
+          )
+        )
       );
     }
 
     // 11. Đồng bộ bảng attendance (các điểm danh thực tế)
     if (Array.isArray(db.attendance) && db.attendance.length > 0) {
-      await supabase.from('attendance').upsert(
-        db.attendance.map((a) => ({
-          id: a.id,
-          session_id: a.sessionId,
-          class_code: a.classCode,
-          student_code: a.studentCode,
-          date: a.date,
-          status: a.status,
-          note: a.note || '',
-          updated_at: now,
-        })),
-        { onConflict: 'id' }
+      tasks.push(
+        Promise.resolve(
+          supabase.from('attendance').upsert(
+            db.attendance
+              .filter((a) => a.id !== FALLBACK_SNAPSHOT_ID)
+              .map((a) => ({
+                id: a.id,
+                session_id: a.sessionId,
+                class_code: a.classCode,
+                student_code: a.studentCode,
+                date: a.date,
+                status: a.status,
+                note: a.note || '',
+                updated_at: now,
+              })),
+            { onConflict: 'id' }
+          )
+        )
       );
     }
+
+    await Promise.allSettled(tasks);
   } catch {
     // Bỏ qua lỗi phụ ở bảng con nếu có để không cản trở luồng chính
   }
@@ -532,76 +579,21 @@ export async function fetchDatabaseFromSupabase(): Promise<SupabaseFetchResult> 
   }
 
   try {
-    // Đọc đồng thời từ bảng trạng thái chính (aplus2_app_state) và bản chụp dự phòng (attendance.__APLUS2_STATE_SNAPSHOT__)
-    const [mainRes, fallbackRes] = await Promise.all([
-      supabase
-        .from(SUPABASE_TABLE_NAME)
-        .select('id, payload, updated_at')
-        .eq('id', SUPABASE_MAIN_ROW_ID)
-        .maybeSingle(),
-      supabase
-        .from('attendance')
-        .select('id, note, updated_at')
-        .eq('id', FALLBACK_SNAPSHOT_ID)
-        .maybeSingle(),
-    ]);
+    const [mainRes, teachersRes, enrollmentsRes, receivablesRes, receiptsRes, accountsRes] =
+      await Promise.all([
+        supabase
+          .from(SUPABASE_TABLE_NAME)
+          .select('id, payload, updated_at')
+          .eq('id', SUPABASE_MAIN_ROW_ID)
+          .maybeSingle(),
+        supabase.from('teachers').select('*'),
+        supabase.from('enrollments').select('*'),
+        supabase.from('receivables').select('*'),
+        supabase.from('receipts').select('*'),
+        supabase.from('accounts').select('*'),
+      ]);
 
-    let candidateMain: { db: AppDatabase; updatedAt: string } | null = null;
-    if (mainRes.data && mainRes.data.payload) {
-      const p = mainRes.data.payload as AppDatabase;
-      if (p && p.accounts && p.settings) {
-        candidateMain = {
-          db: p,
-          updatedAt: mainRes.data.updated_at || new Date(0).toISOString(),
-        };
-      }
-    }
-
-    let candidateFallback: { db: AppDatabase; updatedAt: string } | null = null;
-    if (fallbackRes.data && fallbackRes.data.note) {
-      try {
-        const parsed = JSON.parse(fallbackRes.data.note) as AppDatabase;
-        if (parsed && parsed.accounts && parsed.settings) {
-          candidateFallback = {
-            db: parsed,
-            updatedAt: fallbackRes.data.updated_at || new Date(0).toISOString(),
-          };
-        }
-      } catch {
-        // ignore invalid json
-      }
-    }
-
-    // Ưu tiên bản ghi có dữ liệu mới nhất
-    if (candidateMain && candidateFallback) {
-      const chosen =
-        candidateFallback.updatedAt >= candidateMain.updatedAt
-          ? candidateFallback
-          : candidateMain;
-      return {
-        status: 'CONNECTED',
-        data: chosen.db,
-        updatedAt: chosen.updatedAt,
-      };
-    }
-
-    if (candidateFallback) {
-      return {
-        status: 'CONNECTED',
-        data: candidateFallback.db,
-        updatedAt: candidateFallback.updatedAt,
-      };
-    }
-
-    if (candidateMain) {
-      return {
-        status: 'CONNECTED',
-        data: candidateMain.db,
-        updatedAt: candidateMain.updatedAt,
-      };
-    }
-
-    if (mainRes.error && fallbackRes.error) {
+    if (mainRes.error) {
       const code = (mainRes.error as { code?: string }).code || '';
       const msg = mainRes.error.message || '';
       if (
@@ -621,6 +613,147 @@ export async function fetchDatabaseFromSupabase(): Promise<SupabaseFetchResult> 
         status: 'ERROR',
         errorMessage: `Lỗi truy vấn Supabase: ${msg}`,
       };
+    }
+
+    if (mainRes.data && mainRes.data.payload) {
+      const p = mainRes.data.payload as AppDatabase;
+      if (p && p.accounts && p.settings) {
+        // Hợp nhất bổ sung từ các bảng quan hệ trên Supabase (tránh sót dữ liệu từ các bảng chi tiết)
+        if (Array.isArray(teachersRes.data) && teachersRes.data.length > 0) {
+          const tMap = new Map((p.teachers || []).map((t) => [t.code, t]));
+          for (const row of teachersRes.data) {
+            if (row.code && !tMap.has(row.code)) {
+              const isVH = row.group_code === 'VH';
+              tMap.set(row.code, {
+                code: row.code,
+                fullName: row.full_name || row.code,
+                phone: row.phone || '',
+                email: row.email || '',
+                group: isVH ? 'VH' : 'TATT',
+                specialty: row.specialty || '',
+                qualification: 'Cử nhân',
+                workplace: row.workplace || '',
+                salaryMethod: isVH ? 'PERCENTAGE_RECEIPT' : 'PER_SHIFT',
+                percentageRate: isVH ? Number(row.salary_rate || 70) : 0,
+                shiftRate: !isVH ? Number(row.salary_rate || 300000) : 0,
+                effectiveDate: '2026-07-01',
+                status: row.status === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE',
+                note: row.note || '',
+                rateHistory: [],
+              });
+            }
+          }
+          p.teachers = Array.from(tMap.values());
+        }
+
+        if (Array.isArray(enrollmentsRes.data) && enrollmentsRes.data.length > 0) {
+          const eMap = new Map((p.enrollments || []).map((e) => [e.id, e]));
+          for (const row of enrollmentsRes.data) {
+            if (row.id && !eMap.has(row.id)) {
+              eMap.set(row.id, {
+                id: row.id,
+                studentCode: row.student_code,
+                classCode: row.class_code,
+                enrollmentDate: row.enrollment_date || '2026-07-06',
+                feeStartDate: row.fee_start_date || '2026-07-06',
+                endDate: row.end_date || undefined,
+                actualAttendedSessions: row.actual_attended_sessions ?? undefined,
+                stopReason: row.stop_reason || undefined,
+                appliedFeePerSession: Number(row.applied_fee_per_session || 50000),
+                discountPercent: Number(row.discount_percent || 0),
+                discountAmount: Number(row.discount_amount || 0),
+                status: row.status || 'DANG_HOC',
+              });
+            }
+          }
+          p.enrollments = Array.from(eMap.values());
+        }
+
+        if (Array.isArray(receivablesRes.data) && receivablesRes.data.length > 0) {
+          const rMap = new Map((p.receivables || []).map((r) => [r.id, r]));
+          for (const row of receivablesRes.data) {
+            if (row.id && !rMap.has(row.id)) {
+              rMap.set(row.id, {
+                id: row.id,
+                code: row.code || row.id,
+                cycleName: row.cycle_name || 'Đợt học phí',
+                studentCode: row.student_code,
+                classCode: row.class_code,
+                enrollmentId: row.enrollment_id || '',
+                createdAt: (row.updated_at || '').slice(0, 10) || '2026-08-01',
+                dueDate: row.due_date || '2026-08-15',
+                periodStart: row.period_start || '2026-07-06',
+                periodEnd: row.period_end || '2026-08-30',
+                billingMethod: 'CYCLE_8_WEEKS',
+                sessionIds: [],
+                sessionDates: [],
+                sessionCount: Number(row.session_count || 0),
+                unitPrice: Number(row.unit_price || 50000),
+                grossAmount: Number(row.gross_amount || 0),
+                discountAmount: Number(row.discount_amount || 0),
+                adjustmentAmount: 0,
+                netAmount: Number(row.net_amount || 0),
+                openingDebtReference: 0,
+                paidAmount: Number(row.paid_amount || 0),
+                remainingDebt: Number(row.remaining_debt || 0),
+                status: row.status || 'CHUA_DONG',
+                note: row.note || '',
+              });
+            }
+          }
+          p.receivables = Array.from(rMap.values());
+        }
+
+        if (Array.isArray(receiptsRes.data) && receiptsRes.data.length > 0) {
+          const ptMap = new Map((p.receipts || []).map((pt) => [pt.id, pt]));
+          for (const row of receiptsRes.data) {
+            if (row.id && !ptMap.has(row.id)) {
+              ptMap.set(row.id, {
+                id: row.id,
+                receiptNumber: row.receipt_number || row.id,
+                studentCode: row.student_code,
+                paymentDate: row.payment_date || '2026-08-01',
+                totalAmount: Number(row.total_amount || 0),
+                allocatedTotal: Number(row.allocated_total || 0),
+                unallocatedCredit: Number(row.unallocated_credit || 0),
+                paymentMethod: row.payment_method === 'TM' ? 'TM' : 'CK',
+                collectorName: row.collector_name || 'Kế toán',
+                payerName: row.payer_name || undefined,
+                content: row.content || '',
+                allocations: Array.isArray(row.allocations) ? row.allocations : [],
+                createdAt: row.updated_at || new Date().toISOString(),
+              });
+            }
+          }
+          p.receipts = Array.from(ptMap.values());
+        }
+
+        if (Array.isArray(accountsRes.data) && accountsRes.data.length > 0) {
+          const aMap = new Map((p.accounts || []).map((a) => [a.id, a]));
+          for (const row of accountsRes.data) {
+            if (row.id && !aMap.has(row.id)) {
+              aMap.set(row.id, {
+                id: row.id,
+                username: row.username,
+                password: row.password || '123456',
+                fullName: row.full_name || row.username,
+                role: row.role || 'ACCOUNTANT',
+                linkedTeacherCode: row.linked_teacher_code || undefined,
+                linkedStudentCode: row.linked_student_code || undefined,
+                status: row.status === 'LOCKED' ? 'LOCKED' : 'ACTIVE',
+                lastLogin: row.updated_at || new Date().toISOString(),
+              });
+            }
+          }
+          p.accounts = Array.from(aMap.values());
+        }
+
+        return {
+          status: 'CONNECTED',
+          data: p,
+          updatedAt: mainRes.data.updated_at || new Date().toISOString(),
+        };
+      }
     }
 
     return {
@@ -649,25 +782,7 @@ export async function saveDatabaseToSupabase(
   try {
     const now = new Date().toISOString();
 
-    // 1. Đồng bộ trực tiếp dữ liệu sang toàn bộ các bảng chi tiết trên Supabase (teachers, classes, students, enrollments, sessions, receivables, receipts, payrolls, cashflows, accounts, attendance)
-    await syncRelationalTablesDirectly(db, now);
-
-    // 2. Lưu trạng thái đầy đủ vào bản chụp dự phòng trên bảng attendance (luôn thành công ngay cả khi Trigger cũ trên aplus2_app_state chưa được gỡ)
-    const fallbackSave = await supabase.from('attendance').upsert(
-      {
-        id: FALLBACK_SNAPSHOT_ID,
-        session_id: 'SYSTEM_STATE',
-        class_code: 'APLUS2',
-        student_code: 'SYSTEM',
-        date: now.slice(0, 10),
-        status: 'SYNCED',
-        note: JSON.stringify(db),
-        updated_at: now,
-      },
-      { onConflict: 'id' }
-    );
-
-    // 3. Lưu vào bảng aplus2_app_state
+    // 1. Lưu ngay lập tức vào bảng aplus2_app_state (đảm bảo tốc độ < 300ms, không bị nghẽn)
     const { error } = await supabase.from(SUPABASE_TABLE_NAME).upsert(
       {
         id: SUPABASE_MAIN_ROW_ID,
@@ -677,17 +792,12 @@ export async function saveDatabaseToSupabase(
       { onConflict: 'id' }
     );
 
+    // 2. Đồng bộ nền sang toàn bộ các bảng chi tiết (teachers, classes, students, enrollments, sessions, receivables, receipts, payrolls, cashflows, accounts, attendance)
+    void syncRelationalTablesDirectly(db, now);
+
     if (error) {
       const code = (error as { code?: string }).code || '';
       const msg = error.message || '';
-      // Nếu lỗi 21000 (do Trigger cũ có DELETE không WHERE), nhưng fallbackSave và các bảng chi tiết đã lưu thành công -> vẫn báo thành công!
-      if (!fallbackSave.error && (code === '21000' || msg.includes('WHERE clause'))) {
-        return {
-          ok: true,
-          updatedAt: now,
-          status: 'CONNECTED',
-        };
-      }
       if (
         code === '42P01' ||
         code === 'PGRST205' ||
@@ -695,25 +805,11 @@ export async function saveDatabaseToSupabase(
         msg.includes('schema cache') ||
         msg.includes('does not exist')
       ) {
-        if (!fallbackSave.error) {
-          return {
-            ok: true,
-            updatedAt: now,
-            status: 'CONNECTED',
-          };
-        }
         return {
           ok: false,
           status: 'TABLE_MISSING',
           errorMessage:
             'Bảng `public.aplus2_app_state` chưa được tạo trên Supabase. Hãy mở hướng dẫn SQL để tạo bảng.',
-        };
-      }
-      if (!fallbackSave.error) {
-        return {
-          ok: true,
-          updatedAt: now,
-          status: 'CONNECTED',
         };
       }
       return {
