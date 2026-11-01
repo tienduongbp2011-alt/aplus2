@@ -38,17 +38,19 @@ export interface SupabaseFetchResult {
 }
 
 export const SUPABASE_SETUP_SQL = `-- Dán đoạn lệnh SQL này vào mục "SQL Editor" trên Supabase (https://supabase.com) và bấm "Run":
--- Kịch bản này gỡ bỏ Trigger cũ bị chặn bởi pg_safeupdate (DELETE without WHERE) và chuẩn hoá toàn bộ bảng dữ liệu APLUS 2:
+-- Kịch bản tạo đầy đủ tất cả các bảng dữ liệu chuẩn của Hệ thống Quản lý Trung tâm APLUS 2:
 
 DROP TRIGGER IF EXISTS trg_sync_aplus2_state_to_tables ON public.aplus2_app_state;
 DROP FUNCTION IF EXISTS public.sync_aplus2_state_to_tables();
 
+-- 1. Bảng lưu trữ trạng thái đồng bộ trung tâm
 CREATE TABLE IF NOT EXISTS public.aplus2_app_state (
   id TEXT PRIMARY KEY,
   payload JSONB NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- 2. Bảng Giáo viên
 CREATE TABLE IF NOT EXISTS public.teachers (
   code TEXT PRIMARY KEY,
   full_name TEXT NOT NULL,
@@ -64,6 +66,43 @@ CREATE TABLE IF NOT EXISTS public.teachers (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- 3. Bảng Lớp học tại trung tâm
+CREATE TABLE IF NOT EXISTS public.classes (
+  code TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  subject TEXT,
+  group_code TEXT,
+  grade TEXT,
+  teacher_code TEXT,
+  start_date TEXT,
+  end_date TEXT,
+  fee_per_session BIGINT DEFAULT 50000,
+  billing_method TEXT,
+  max_students INT DEFAULT 25,
+  room_code TEXT,
+  status TEXT DEFAULT 'DANG_HOC',
+  schedule_items JSONB DEFAULT '[]'::jsonb,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 4. Bảng Hồ sơ Học viên (hỗ trợ phân lớp trường phổ thông: 12TN1 - THPT Thanh Hoà)
+CREATE TABLE IF NOT EXISTS public.students (
+  code TEXT PRIMARY KEY,
+  full_name TEXT NOT NULL,
+  dob TEXT,
+  gender TEXT DEFAULT 'Nam',
+  school TEXT,
+  school_class TEXT,
+  parent_name TEXT,
+  phone TEXT,
+  admission_date TEXT,
+  status TEXT DEFAULT 'DANG_HOC',
+  credit_balance BIGINT DEFAULT 0,
+  note TEXT,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 5. Bảng Đăng ký môn học / Ghi danh lớp
 CREATE TABLE IF NOT EXISTS public.enrollments (
   id TEXT PRIMARY KEY,
   student_code TEXT NOT NULL,
@@ -80,6 +119,7 @@ CREATE TABLE IF NOT EXISTS public.enrollments (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- 6. Bảng Buổi học
 CREATE TABLE IF NOT EXISTS public.sessions (
   id TEXT PRIMARY KEY,
   class_code TEXT NOT NULL,
@@ -93,6 +133,7 @@ CREATE TABLE IF NOT EXISTS public.sessions (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- 7. Bảng Điểm danh
 CREATE TABLE IF NOT EXISTS public.attendance (
   id TEXT PRIMARY KEY,
   session_id TEXT,
@@ -104,6 +145,7 @@ CREATE TABLE IF NOT EXISTS public.attendance (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- 8. Bảng Đợt thu học phí / Khoản phải thu
 CREATE TABLE IF NOT EXISTS public.receivables (
   id TEXT PRIMARY KEY,
   code TEXT,
@@ -111,6 +153,8 @@ CREATE TABLE IF NOT EXISTS public.receivables (
   student_code TEXT,
   class_code TEXT,
   enrollment_id TEXT,
+  period_start TEXT,
+  period_end TEXT,
   due_date TEXT,
   session_count INT DEFAULT 0,
   unit_price BIGINT DEFAULT 0,
@@ -124,6 +168,7 @@ CREATE TABLE IF NOT EXISTS public.receivables (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- 9. Bảng Phiếu thu học phí
 CREATE TABLE IF NOT EXISTS public.receipts (
   id TEXT PRIMARY KEY,
   receipt_number TEXT,
@@ -134,11 +179,18 @@ CREATE TABLE IF NOT EXISTS public.receipts (
   unallocated_credit BIGINT DEFAULT 0,
   payment_method TEXT,
   collector_name TEXT,
+  payer_name TEXT,
   content TEXT,
   allocations JSONB DEFAULT '[]'::jsonb,
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Bổ sung cột mới nếu bảng đã tồn tại từ trước
+ALTER TABLE public.receivables ADD COLUMN IF NOT EXISTS period_start TEXT;
+ALTER TABLE public.receivables ADD COLUMN IF NOT EXISTS period_end TEXT;
+ALTER TABLE public.receipts ADD COLUMN IF NOT EXISTS payer_name TEXT;
+
+-- 10. Bảng Lương Giáo viên
 CREATE TABLE IF NOT EXISTS public.payrolls (
   id TEXT PRIMARY KEY,
   code TEXT,
@@ -153,6 +205,7 @@ CREATE TABLE IF NOT EXISTS public.payrolls (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- 11. Bảng Sổ quỹ Thu - Chi
 CREATE TABLE IF NOT EXISTS public.cashflows (
   id TEXT PRIMARY KEY,
   code TEXT,
@@ -166,6 +219,7 @@ CREATE TABLE IF NOT EXISTS public.cashflows (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- 12. Bảng Tài khoản & Phân quyền
 CREATE TABLE IF NOT EXISTS public.accounts (
   id TEXT PRIMARY KEY,
   username TEXT NOT NULL,
@@ -176,7 +230,21 @@ CREATE TABLE IF NOT EXISTS public.accounts (
   linked_student_code TEXT,
   status TEXT DEFAULT 'ACTIVE',
   updated_at TIMESTAMPTZ DEFAULT NOW()
-);`;
+);
+
+-- 13. Cấp quyền truy cập đọc/ghi cho ứng dụng (Anon Key)
+ALTER TABLE public.aplus2_app_state DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.teachers DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.classes DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.students DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.enrollments DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.sessions DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.attendance DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.receivables DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.receipts DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.payrolls DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.cashflows DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.accounts DISABLE ROW LEVEL SECURITY;`;
 
 async function syncRelationalTablesDirectly(db: AppDatabase, now: string): Promise<void> {
   if (!supabase) return;
