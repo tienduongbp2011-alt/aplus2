@@ -41,6 +41,7 @@ export const ClassesView: React.FC = () => {
     db,
     currentAccount,
     saveClass,
+    deleteClass,
     saveEnrollment,
     settleEarlyWithdrawalEnrollment,
     selectedClassCodeForDetail,
@@ -1011,6 +1012,13 @@ export const ClassesView: React.FC = () => {
                         className="rounded border border-[#D4E8DB] p-1.5 text-[#173B2C] hover:bg-[#F2FAF5]"
                       >
                         <Edit2 className="h-4 w-4" />
+                      </button>
+                      <button
+                        onClick={() => deleteClass(c.code)}
+                        title="Xoá lớp học này"
+                        className="rounded border border-red-200 p-1.5 text-red-600 hover:bg-red-50"
+                      >
+                        <Trash2 className="h-4 w-4" />
                       </button>
                     </div>
                   </td>

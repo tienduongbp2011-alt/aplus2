@@ -7,6 +7,7 @@ import {
   Plus,
   Power,
   Search,
+  Trash2,
   X,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
@@ -23,7 +24,7 @@ import { exportRowsToExcel } from '../utils/excelService';
 import { ExcelImportModal } from '../components/ExcelImportModal';
 
 export const TeachersView: React.FC = () => {
-  const { db, saveTeacher, toggleTeacherActive } = useApp();
+  const { db, saveTeacher, deleteTeacher, toggleTeacherActive } = useApp();
   const [search, setSearch] = useState('');
   const [groupFilter, setGroupFilter] = useState<'ALL' | TeachingGroup>('ALL');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'ACTIVE' | 'INACTIVE'>('ALL');
@@ -360,6 +361,13 @@ export const TeachersView: React.FC = () => {
                           className="rounded border border-[#D4E8DB] p-1.5 text-amber-700 hover:bg-amber-50"
                         >
                           <Power className="h-4 w-4" />
+                        </button>
+                        <button
+                          onClick={() => deleteTeacher(t.code)}
+                          title="Xoá giáo viên khỏi hệ thống"
+                          className="rounded border border-red-200 p-1.5 text-red-600 hover:bg-red-50"
+                        >
+                          <Trash2 className="h-4 w-4" />
                         </button>
                       </div>
                     </td>

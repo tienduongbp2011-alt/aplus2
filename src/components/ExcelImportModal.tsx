@@ -15,7 +15,11 @@ import {
   parseAndValidateExcelFile,
   ValidatedImportRow,
 } from '../utils/excelService';
-import { useApp } from '../context/AppContext';
+import {
+  DEMO_CLASS_CODES,
+  DEMO_TEACHER_NAMES,
+  useApp,
+} from '../context/AppContext';
 import { ClassInfo, ClassSession, Enrollment, Student, Teacher } from '../types';
 
 interface ExcelImportModalProps {
@@ -34,7 +38,9 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
   const { db, updateDb, notify } = useApp();
   const [rows, setRows] = useState<ValidatedImportRow[]>([]);
   const [fileName, setFileName] = useState<string>('');
-  const [duplicateMode, setDuplicateMode] = useState<'SKIP' | 'UPDATE'>('UPDATE');
+  const [duplicateMode, setDuplicateMode] = useState<'REPLACE_ALL' | 'UPDATE' | 'SKIP'>(
+    entityType === 'TEACHERS' || entityType === 'CLASSES' ? 'REPLACE_ALL' : 'UPDATE'
+  );
   const [importResult, setImportResult] = useState<{
     done: boolean;
     successCount: number;
@@ -69,41 +75,85 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
         const next = { ...prev };
 
         if (entityType === 'TEACHERS') {
-          const list = [...next.teachers];
-          for (const row of validRows) {
-            const item = row.parsed as unknown as Teacher;
-            const idx = list.findIndex((t) => t.code === item.code);
-            if (idx >= 0) {
-              if (duplicateMode === 'SKIP') {
-                skippedCount++;
-                continue;
+          if (duplicateMode === 'REPLACE_ALL') {
+            const newTeachers: Teacher[] = [];
+            for (const row of validRows) {
+              const item = row.parsed as unknown as Teacher;
+              const existing = prev.teachers.find((t) => t.code === item.code);
+              const idx = newTeachers.findIndex((t) => t.code === item.code);
+              const merged = {
+                ...item,
+                rateHistory: existing?.rateHistory || item.rateHistory || [],
+              };
+              if (idx >= 0) {
+                newTeachers[idx] = merged;
+              } else {
+                newTeachers.push(merged);
               }
-              list[idx] = { ...list[idx], ...item, rateHistory: list[idx].rateHistory };
-              successCount++;
-            } else {
-              list.push(item);
               successCount++;
             }
+            next.teachers = newTeachers;
+          } else {
+            const list = prev.teachers.filter((t) => !DEMO_TEACHER_NAMES.has(t.fullName));
+            for (const row of validRows) {
+              const item = row.parsed as unknown as Teacher;
+              const idx = list.findIndex((t) => t.code === item.code);
+              if (idx >= 0) {
+                if (duplicateMode === 'SKIP') {
+                  skippedCount++;
+                  continue;
+                }
+                list[idx] = { ...list[idx], ...item, rateHistory: list[idx].rateHistory };
+                successCount++;
+              } else {
+                list.push(item);
+                successCount++;
+              }
+            }
+            next.teachers = list;
           }
-          next.teachers = list;
         } else if (entityType === 'CLASSES') {
-          const list = [...next.classes];
-          for (const row of validRows) {
-            const item = row.parsed as unknown as ClassInfo;
-            const idx = list.findIndex((c) => c.code === item.code);
-            if (idx >= 0) {
-              if (duplicateMode === 'SKIP') {
-                skippedCount++;
-                continue;
+          if (duplicateMode === 'REPLACE_ALL') {
+            const newClasses: ClassInfo[] = [];
+            for (const row of validRows) {
+              const item = row.parsed as unknown as ClassInfo;
+              const idx = newClasses.findIndex((c) => c.code === item.code);
+              if (idx >= 0) {
+                newClasses[idx] = item;
+              } else {
+                newClasses.push(item);
               }
-              list[idx] = { ...list[idx], ...item };
-              successCount++;
-            } else {
-              list.push(item);
               successCount++;
             }
+            const keptClassCodes = new Set(newClasses.map((c) => c.code));
+            next.classes = newClasses;
+            next.enrollments = prev.enrollments.filter((e) => keptClassCodes.has(e.classCode));
+            next.sessions = prev.sessions.filter((s) => keptClassCodes.has(s.classCode));
+            next.attendance = prev.attendance.filter((a) => keptClassCodes.has(a.classCode));
+            next.assignments = prev.assignments.filter((a) => keptClassCodes.has(a.classCode));
+            next.receivables = prev.receivables.filter((r) => keptClassCodes.has(r.classCode));
+          } else {
+            const list = prev.classes.filter((c) => !DEMO_CLASS_CODES.has(c.code));
+            for (const row of validRows) {
+              const item = row.parsed as unknown as ClassInfo;
+              const idx = list.findIndex((c) => c.code === item.code);
+              if (idx >= 0) {
+                if (duplicateMode === 'SKIP') {
+                  skippedCount++;
+                  continue;
+                }
+                list[idx] = { ...list[idx], ...item };
+                successCount++;
+              } else {
+                list.push(item);
+                successCount++;
+              }
+            }
+            const keptClassCodes = new Set(list.map((c) => c.code));
+            next.classes = list;
+            next.enrollments = prev.enrollments.filter((e) => keptClassCodes.has(e.classCode));
+            next.sessions = prev.sessions.filter((s) => keptClassCodes.has(s.classCode));
           }
-          next.classes = list;
         } else if (entityType === 'STUDENTS') {
           const list = [...next.students];
           for (const row of validRows) {
@@ -145,7 +195,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
       {
         action: `NHẬP EXCEL (${entityType})`,
         target: fileName,
-        detail: `Thành công: ${successCount} dòng, Bỏ qua: ${skippedCount} dòng, Lỗi: ${failedRows.length} dòng.`,
+        detail: `Chế độ: ${duplicateMode === 'REPLACE_ALL' ? 'Thay thế & xóa dữ liệu cũ' : duplicateMode}. Thành công: ${successCount} dòng, Bỏ qua: ${skippedCount} dòng, Lỗi: ${failedRows.length} dòng.`,
       }
     );
 
@@ -156,7 +206,9 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
       failedCount: failedRows.length,
     });
     notify(
-      `Nhập Excel hoàn tất: ${successCount} dòng thành công, ${failedRows.length} dòng lỗi.`,
+      duplicateMode === 'REPLACE_ALL'
+        ? `Đã cập nhật mới ${successCount} dòng và tự động xóa dữ liệu cũ thành công!`
+        : `Nhập Excel hoàn tất: ${successCount} dòng thành công, ${failedRows.length} dòng lỗi.`,
       failedRows.length > 0 ? 'WARNING' : 'SUCCESS'
     );
   };
@@ -197,8 +249,19 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
             </div>
 
             <div className="rounded-lg border border-[#D4E8DB] bg-[#F2FAF5] p-4">
-              <div className="font-bold text-[#173B2C]">2. Chọn tệp Excel cần nhập & Tuỳ chọn trùng mã</div>
-              <div className="mt-2 flex flex-wrap items-center gap-4 text-sm">
+              <div className="font-bold text-[#173B2C]">2. Chọn tệp Excel cần nhập & Chế độ cập nhật</div>
+              <div className="mt-2 flex flex-col gap-1.5 text-sm">
+                {(entityType === 'TEACHERS' || entityType === 'CLASSES') && (
+                  <label className="flex items-center gap-1.5 font-bold text-[#008653]">
+                    <input
+                      type="radio"
+                      name="dupMode"
+                      checked={duplicateMode === 'REPLACE_ALL'}
+                      onChange={() => setDuplicateMode('REPLACE_ALL')}
+                    />
+                    <span>Thay thế toàn bộ – Tự động xóa dữ liệu cũ (Khuyên dùng)</span>
+                  </label>
+                )}
                 <label className="flex items-center gap-1.5">
                   <input
                     type="radio"
@@ -206,7 +269,7 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({
                     checked={duplicateMode === 'UPDATE'}
                     onChange={() => setDuplicateMode('UPDATE')}
                   />
-                  <span>Cập nhật khi mã đã tồn tại</span>
+                  <span>Cập nhật thêm vào danh sách hiện tại (vẫn tự xóa dữ liệu mẫu)</span>
                 </label>
                 <label className="flex items-center gap-1.5">
                   <input

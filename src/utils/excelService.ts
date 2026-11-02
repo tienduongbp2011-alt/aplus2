@@ -898,6 +898,10 @@ export async function restoreDatabaseFromSavedFiles(
   let restoredFullJson = false;
 
   const upsertTeacher = (t: Teacher) => {
+    if (addedTeachers === 0) {
+      // Khi tải tệp Giáo viên lên khôi phục/cập nhật -> tự động xóa danh sách giáo viên cũ
+      nextDb.teachers = [];
+    }
     const idx = nextDb.teachers.findIndex((x) => x.code === t.code);
     if (idx >= 0) {
       nextDb.teachers[idx] = { ...nextDb.teachers[idx], ...t };
@@ -908,6 +912,10 @@ export async function restoreDatabaseFromSavedFiles(
   };
 
   const upsertClass = (c: ClassInfo) => {
+    if (addedClasses === 0) {
+      // Khi tải tệp Lớp học lên khôi phục/cập nhật -> tự động xóa danh sách lớp học cũ
+      nextDb.classes = [];
+    }
     const idx = nextDb.classes.findIndex((x) => x.code === c.code);
     if (idx >= 0) {
       nextDb.classes[idx] = { ...nextDb.classes[idx], ...c };

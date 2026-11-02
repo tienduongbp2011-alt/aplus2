@@ -73,8 +73,10 @@ interface AppContextValue {
   setSelectedStudentCodeForDetail: (code: string | null) => void;
   // Nghiệp vụ tiện ích
   saveTeacher: (teacher: Teacher, isEdit: boolean) => boolean;
+  deleteTeacher: (code: string) => void;
   toggleTeacherActive: (code: string) => void;
   saveClass: (cls: ClassInfo, isEdit: boolean) => boolean;
+  deleteClass: (code: string) => void;
   saveStudent: (student: Student, isEdit: boolean) => boolean;
   deleteStudent: (code: string) => boolean;
   deleteUnenrolledStudents: (targetCodes?: string[]) => number;
@@ -105,6 +107,53 @@ interface AppContextValue {
   saveUserAccount: (acc: UserAccount, isEdit: boolean) => boolean;
 }
 
+export const DEMO_TEACHER_NAMES = new Set([
+  'Nguyễn Thị Mai',
+  'Trần Văn Minh',
+  'Lê Thị Lan',
+  'Mr. David Miller',
+  'Vũ Hoàng Yến',
+  'Đinh Quốc Khánh',
+]);
+
+export const DEMO_CLASS_CODES = new Set([
+  'TOAN6A',
+  'VAN6A',
+  'ANH5A',
+  'IELTS65A',
+  'TOAN12A',
+  'VAN12A',
+]);
+
+export const DEMO_STUDENT_CODES = new Set(
+  Array.from({ length: 19 }, (_, i) => `HV${String(i + 1).padStart(3, '0')}`)
+);
+
+export function purgeDemoDataIfRealExists(data: AppDatabase): AppDatabase {
+  const next = { ...data };
+  const hasRealTeachers = (next.teachers || []).some((t) => !DEMO_TEACHER_NAMES.has(t.fullName));
+  if (hasRealTeachers) {
+    next.teachers = (next.teachers || []).filter((t) => !DEMO_TEACHER_NAMES.has(t.fullName));
+  }
+  const hasRealClasses = (next.classes || []).some((c) => !DEMO_CLASS_CODES.has(c.code));
+  if (hasRealClasses) {
+    next.classes = (next.classes || []).filter((c) => !DEMO_CLASS_CODES.has(c.code));
+    next.enrollments = (next.enrollments || []).filter((e) => !DEMO_CLASS_CODES.has(e.classCode));
+    next.sessions = (next.sessions || []).filter((s) => !DEMO_CLASS_CODES.has(s.classCode));
+    next.attendance = (next.attendance || []).filter((a) => !DEMO_CLASS_CODES.has(a.classCode));
+    next.assignments = (next.assignments || []).filter((a) => !DEMO_CLASS_CODES.has(a.classCode));
+    next.receivables = (next.receivables || []).filter((r) => !DEMO_CLASS_CODES.has(r.classCode));
+  }
+  const hasRealStudents = (next.students || []).some((s) => !DEMO_STUDENT_CODES.has(s.code));
+  if (hasRealStudents) {
+    next.students = (next.students || []).filter((s) => !DEMO_STUDENT_CODES.has(s.code));
+    next.enrollments = (next.enrollments || []).filter(
+      (e) => !DEMO_STUDENT_CODES.has(e.studentCode)
+    );
+  }
+  return next;
+}
+
 const AppContext = createContext<AppContextValue | null>(null);
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -114,18 +163,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (saved) {
         const parsed = JSON.parse(saved) as AppDatabase;
         if (parsed && parsed.teachers && parsed.classes && parsed.students) {
-          const seed = createInitialSeedDatabase();
-          for (const c of seed.classes) {
-            if (!parsed.classes.some((existing) => existing.code === c.code)) {
-              parsed.classes.push(c);
-            }
-          }
-          for (const s of seed.students) {
-            if (!parsed.students.some((existing) => existing.code === s.code)) {
-              parsed.students.push(s);
-            }
-          }
-          return parsed;
+          return purgeDemoDataIfRealExists(parsed);
         }
       }
     } catch {
@@ -290,7 +328,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (res.status === 'CONNECTED') {
         const localUpdatedAt = localStorage.getItem('APLUS2_LOCAL_UPDATED_AT_V1') || '';
         const remoteUpdatedAt = res.updatedAt || '';
-        const remoteData = res.data;
+        const remoteData = res.data ? purgeDemoDataIfRealExists(res.data) : undefined;
+        const cleanLocalDb = purgeDemoDataIfRealExists(db);
         const remoteCount = remoteData
           ? (remoteData.teachers?.length || 0) +
             (remoteData.classes?.length || 0) +
@@ -298,14 +337,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             (remoteData.enrollments?.length || 0)
           : 0;
         const localCount =
-          (db.teachers?.length || 0) +
-          (db.classes?.length || 0) +
-          (db.students?.length || 0) +
-          (db.enrollments?.length || 0);
+          (cleanLocalDb.teachers?.length || 0) +
+          (cleanLocalDb.classes?.length || 0) +
+          (cleanLocalDb.students?.length || 0) +
+          (cleanLocalDb.enrollments?.length || 0);
 
         // Chỉ đẩy dữ liệu từ máy lên Supabase khi:
         // 1. Supabase chưa có dữ liệu (remoteCount === 0), HOẶC
-        // 2. Dữ liệu trên trình duyệt này mới hơn VÀ có số lượng bản ghi không ít hơn dữ liệu trên Supabase (tránh tab mới chỉ có dữ liệu mẫu ghi đè mất dữ liệu thật trên Supabase)
+        // 2. Dữ liệu trên trình duyệt này mới hơn VÀ có số lượng bản ghi thực tế không ít hơn dữ liệu trên Supabase
         const shouldPushLocal =
           !remoteData ||
           !remoteData.accounts ||
@@ -317,7 +356,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             localCount >= remoteCount);
 
         if (shouldPushLocal) {
-          const saveRes = await saveDatabaseToSupabase(db);
+          setDb(cleanLocalDb);
+          const saveRes = await saveDatabaseToSupabase(cleanLocalDb);
           if (!isMounted) return;
           setSupabaseStatus(saveRes.status);
           const syncTime = saveRes.updatedAt || new Date().toISOString();
@@ -504,14 +544,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       notify('Vui lòng nhập đầy đủ Mã giáo viên và Họ tên.', 'ERROR');
       return false;
     }
-    if (!isEdit && db.teachers.some((t) => t.code === cleanCode)) {
+    if (
+      !isEdit &&
+      db.teachers.some((t) => t.code === cleanCode && !DEMO_TEACHER_NAMES.has(t.fullName))
+    ) {
       notify(`Mã giáo viên "${cleanCode}" đã tồn tại trên hệ thống.`, 'ERROR');
       return false;
     }
 
     updateDb(
       (prev) => {
-        const list = [...prev.teachers];
+        // Tự động xóa các giáo viên mẫu (dữ liệu cũ) khi người dùng thêm/cập nhật giáo viên thực tế
+        const list = prev.teachers.filter(
+          (t) => t.code === cleanCode || !DEMO_TEACHER_NAMES.has(t.fullName)
+        );
         const idx = list.findIndex((t) => t.code === cleanCode);
         if (idx >= 0) {
           const old = list[idx];
@@ -552,11 +598,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       {
         action: isEdit ? 'CẬP NHẬT GIÁO VIÊN' : 'THÊM GIÁO VIÊN',
         target: `${cleanCode} - ${teacher.fullName}`,
-        detail: `Nhóm ${teacher.group}, mức lương hiệu lực từ ${teacher.effectiveDate}`,
+        detail: `Nhóm ${teacher.group}, mức lương hiệu lực từ ${teacher.effectiveDate} (tự động dọn dữ liệu mẫu cũ)`,
       }
     );
-    notify(isEdit ? 'Đã cập nhật thông tin giáo viên.' : 'Đã thêm giáo viên mới thành công.');
+    notify(
+      isEdit
+        ? 'Đã cập nhật thông tin giáo viên (và tự động dọn dữ liệu cũ).'
+        : 'Đã thêm giáo viên mới thành công (và tự động dọn dữ liệu cũ).'
+    );
     return true;
+  };
+
+  const deleteTeacher = (code: string) => {
+    const teacher = db.teachers.find((t) => t.code === code);
+    if (!teacher) return;
+    updateDb(
+      (prev) => ({
+        ...prev,
+        teachers: prev.teachers.filter((t) => t.code !== code),
+      }),
+      {
+        action: 'XOÁ GIÁO VIÊN',
+        target: `${teacher.code} - ${teacher.fullName}`,
+        detail: 'Đã xoá giáo viên khỏi hệ thống và đồng bộ Supabase.',
+      }
+    );
+    notify(`Đã xoá giáo viên ${teacher.fullName} (${teacher.code}).`, 'SUCCESS');
   };
 
   const toggleTeacherActive = (code: string) => {
@@ -587,7 +654,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       notify('Vui lòng nhập Mã lớp và Tên lớp.', 'ERROR');
       return false;
     }
-    if (!isEdit && db.classes.some((c) => c.code === cleanCode)) {
+    if (
+      !isEdit &&
+      db.classes.some((c) => c.code === cleanCode && !DEMO_CLASS_CODES.has(c.code))
+    ) {
       notify(`Mã lớp "${cleanCode}" đã tồn tại.`, 'ERROR');
       return false;
     }
@@ -597,23 +667,66 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
     updateDb(
       (prev) => {
-        const list = [...prev.classes];
+        // Tự động xóa các lớp học mẫu (dữ liệu cũ) và đăng ký/buổi học mẫu đi kèm
+        const removedDemoClassCodes = new Set(
+          prev.classes
+            .filter((c) => c.code !== cleanCode && DEMO_CLASS_CODES.has(c.code))
+            .map((c) => c.code)
+        );
+        const list = prev.classes.filter((c) => !removedDemoClassCodes.has(c.code));
         const idx = list.findIndex((c) => c.code === cleanCode);
         if (idx >= 0) {
           list[idx] = { ...cls, code: cleanCode };
         } else {
           list.push({ ...cls, code: cleanCode });
         }
-        return { ...prev, classes: list };
+        return {
+          ...prev,
+          classes: list,
+          enrollments: prev.enrollments.filter((e) => !removedDemoClassCodes.has(e.classCode)),
+          sessions: prev.sessions.filter((s) => !removedDemoClassCodes.has(s.classCode)),
+          attendance: prev.attendance.filter((a) => !removedDemoClassCodes.has(a.classCode)),
+          assignments: prev.assignments.filter((a) => !removedDemoClassCodes.has(a.classCode)),
+          receivables: prev.receivables.filter((r) => !removedDemoClassCodes.has(r.classCode)),
+        };
       },
       {
         action: isEdit ? 'CẬP NHẬT LỚP HỌC' : 'TẠO LỚP HỌC MỚI',
         target: `${cleanCode} - ${cls.name}`,
-        detail: `GV: ${cls.teacherCode || 'Chưa phân công'}, Đơn giá: ${cls.feePerSession.toLocaleString('vi-VN')} đ/buổi`,
+        detail: `GV: ${cls.teacherCode || 'Chưa phân công'}, Đơn giá: ${cls.feePerSession.toLocaleString('vi-VN')} đ/buổi (tự động dọn lớp cũ)`,
       }
     );
-    notify(isEdit ? 'Đã cập nhật thông tin lớp học.' : 'Đã tạo lớp học mới thành công.');
+    notify(
+      isEdit
+        ? 'Đã cập nhật thông tin lớp học (và tự động dọn dữ liệu lớp cũ).'
+        : 'Đã tạo lớp học mới thành công (và tự động dọn dữ liệu lớp cũ).'
+    );
     return true;
+  };
+
+  const deleteClass = (code: string) => {
+    const cls = db.classes.find((c) => c.code === code);
+    if (!cls) return;
+    if (selectedClassCodeForDetail === code) {
+      setSelectedClassCodeForDetail(null);
+    }
+    updateDb(
+      (prev) => ({
+        ...prev,
+        classes: prev.classes.filter((c) => c.code !== code),
+        enrollments: prev.enrollments.filter((e) => e.classCode !== code),
+        sessions: prev.sessions.filter((s) => s.classCode !== code),
+        attendance: prev.attendance.filter((a) => a.classCode !== code),
+        assignments: prev.assignments.filter((a) => a.classCode !== code),
+        receivables: prev.receivables.filter((r) => r.classCode !== code),
+      }),
+      {
+        action: 'XOÁ LỚP HỌC',
+        target: `${cls.code} - ${cls.name}`,
+        detail: 'Đã xoá lớp học và các dữ liệu lịch học/ghi danh đi kèm.',
+      }
+    );
+    notify(`Đã xoá lớp học ${cls.name} (${cls.code}).`, 'SUCCESS');
   };
 
   const saveStudent = (student: Student, isEdit: boolean): boolean => {
@@ -1451,8 +1564,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         selectedStudentCodeForDetail,
         setSelectedStudentCodeForDetail,
         saveTeacher,
+        deleteTeacher,
         toggleTeacherActive,
         saveClass,
+        deleteClass,
         saveStudent,
         deleteStudent,
         deleteUnenrolledStudents,

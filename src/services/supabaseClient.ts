@@ -254,11 +254,21 @@ async function syncRelationalTablesDirectly(db: AppDatabase, now: string): Promi
   try {
     const tasks: Promise<unknown>[] = [];
 
-    // 1. Đồng bộ bảng teachers
-    if (Array.isArray(db.teachers) && db.teachers.length > 0) {
-      tasks.push(
-        Promise.resolve(
-          supabase.from('teachers').upsert(
+    // 1. Đồng bộ bảng teachers (Xoá các mã giáo viên cũ không còn trong danh sách hiện tại)
+    tasks.push(
+      (async () => {
+        const currentTeacherCodes = (db.teachers || []).map((t) => t.code);
+        if (currentTeacherCodes.length > 0) {
+          const { data: existingT } = await supabase.from('teachers').select('code');
+          if (Array.isArray(existingT)) {
+            const toDelete = existingT
+              .map((r: { code: string }) => r.code)
+              .filter((c) => c && !currentTeacherCodes.includes(c));
+            if (toDelete.length > 0) {
+              await supabase.from('teachers').delete().in('code', toDelete);
+            }
+          }
+          await supabase.from('teachers').upsert(
             db.teachers.map((t) => ({
               code: t.code,
               full_name: t.fullName,
@@ -274,15 +284,27 @@ async function syncRelationalTablesDirectly(db: AppDatabase, now: string): Promi
               updated_at: now,
             })),
             { onConflict: 'code' }
-          )
-        )
-      );
-    }
+          );
+        } else {
+          await supabase.from('teachers').delete().neq('code', '__NONE__');
+        }
+      })()
+    );
 
-    // 2. Đồng bộ bảng classes (Tương thích cả cấu trúc (id, data, updated_at) và cấu trúc cột chi tiết)
-    if (Array.isArray(db.classes) && db.classes.length > 0) {
-      tasks.push(
-        (async () => {
+    // 2. Đồng bộ bảng classes (Xoá các lớp học cũ không còn trong danh sách hiện tại)
+    tasks.push(
+      (async () => {
+        const currentClassCodes = (db.classes || []).map((c) => c.code);
+        if (currentClassCodes.length > 0) {
+          const { data: existingC } = await supabase.from('classes').select('id');
+          if (Array.isArray(existingC)) {
+            const toDelete = existingC
+              .map((r: { id: string }) => r.id)
+              .filter((id) => id && !currentClassCodes.includes(id));
+            if (toDelete.length > 0) {
+              await supabase.from('classes').delete().in('id', toDelete);
+            }
+          }
           const resJson = await supabase.from('classes').upsert(
             db.classes.map((c) => ({
               id: c.code,
@@ -313,9 +335,11 @@ async function syncRelationalTablesDirectly(db: AppDatabase, now: string): Promi
               { onConflict: 'code' }
             );
           }
-        })()
-      );
-    }
+        } else {
+          await supabase.from('classes').delete().neq('id', '__NONE__');
+        }
+      })()
+    );
 
     // 3. Đồng bộ bảng students theo lô (chỉ đẩy khi danh sách học viên thay đổi để tăng tốc tối đa)
     if (Array.isArray(db.students) && db.students.length > 0) {
@@ -365,11 +389,21 @@ async function syncRelationalTablesDirectly(db: AppDatabase, now: string): Promi
       }
     }
 
-    // 4. Đồng bộ bảng enrollments
-    if (Array.isArray(db.enrollments) && db.enrollments.length > 0) {
-      tasks.push(
-        Promise.resolve(
-          supabase.from('enrollments').upsert(
+    // 4. Đồng bộ bảng enrollments (Xoá các đăng ký của lớp cũ đã xoá)
+    tasks.push(
+      (async () => {
+        const currentEnrollIds = new Set((db.enrollments || []).map((e) => e.id));
+        const { data: existingE } = await supabase.from('enrollments').select('id');
+        if (Array.isArray(existingE)) {
+          const toDelete = existingE
+            .map((r: { id: string }) => r.id)
+            .filter((id) => id && !currentEnrollIds.has(id));
+          if (toDelete.length > 0) {
+            await supabase.from('enrollments').delete().in('id', toDelete);
+          }
+        }
+        if (Array.isArray(db.enrollments) && db.enrollments.length > 0) {
+          await supabase.from('enrollments').upsert(
             db.enrollments.map((e) => ({
               id: e.id,
               student_code: e.studentCode,
@@ -386,10 +420,10 @@ async function syncRelationalTablesDirectly(db: AppDatabase, now: string): Promi
               updated_at: now,
             })),
             { onConflict: 'id' }
-          )
-        )
-      );
-    }
+          );
+        }
+      })()
+    );
 
     // 5. Đồng bộ bảng sessions
     if (Array.isArray(db.sessions) && db.sessions.length > 0) {
@@ -579,19 +613,11 @@ export async function fetchDatabaseFromSupabase(): Promise<SupabaseFetchResult> 
   }
 
   try {
-    const [mainRes, teachersRes, enrollmentsRes, receivablesRes, receiptsRes, accountsRes] =
-      await Promise.all([
-        supabase
-          .from(SUPABASE_TABLE_NAME)
-          .select('id, payload, updated_at')
-          .eq('id', SUPABASE_MAIN_ROW_ID)
-          .maybeSingle(),
-        supabase.from('teachers').select('*'),
-        supabase.from('enrollments').select('*'),
-        supabase.from('receivables').select('*'),
-        supabase.from('receipts').select('*'),
-        supabase.from('accounts').select('*'),
-      ]);
+    const mainRes = await supabase
+      .from(SUPABASE_TABLE_NAME)
+      .select('id, payload, updated_at')
+      .eq('id', SUPABASE_MAIN_ROW_ID)
+      .maybeSingle();
 
     if (mainRes.error) {
       const code = (mainRes.error as { code?: string }).code || '';
@@ -618,136 +644,6 @@ export async function fetchDatabaseFromSupabase(): Promise<SupabaseFetchResult> 
     if (mainRes.data && mainRes.data.payload) {
       const p = mainRes.data.payload as AppDatabase;
       if (p && p.accounts && p.settings) {
-        // Hợp nhất bổ sung từ các bảng quan hệ trên Supabase (tránh sót dữ liệu từ các bảng chi tiết)
-        if (Array.isArray(teachersRes.data) && teachersRes.data.length > 0) {
-          const tMap = new Map((p.teachers || []).map((t) => [t.code, t]));
-          for (const row of teachersRes.data) {
-            if (row.code && !tMap.has(row.code)) {
-              const isVH = row.group_code === 'VH';
-              tMap.set(row.code, {
-                code: row.code,
-                fullName: row.full_name || row.code,
-                phone: row.phone || '',
-                email: row.email || '',
-                group: isVH ? 'VH' : 'TATT',
-                specialty: row.specialty || '',
-                qualification: 'Cử nhân',
-                workplace: row.workplace || '',
-                salaryMethod: isVH ? 'PERCENTAGE_RECEIPT' : 'PER_SHIFT',
-                percentageRate: isVH ? Number(row.salary_rate || 70) : 0,
-                shiftRate: !isVH ? Number(row.salary_rate || 300000) : 0,
-                effectiveDate: '2026-07-01',
-                status: row.status === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE',
-                note: row.note || '',
-                rateHistory: [],
-              });
-            }
-          }
-          p.teachers = Array.from(tMap.values());
-        }
-
-        if (Array.isArray(enrollmentsRes.data) && enrollmentsRes.data.length > 0) {
-          const eMap = new Map((p.enrollments || []).map((e) => [e.id, e]));
-          for (const row of enrollmentsRes.data) {
-            if (row.id && !eMap.has(row.id)) {
-              eMap.set(row.id, {
-                id: row.id,
-                studentCode: row.student_code,
-                classCode: row.class_code,
-                enrollmentDate: row.enrollment_date || '2026-07-06',
-                feeStartDate: row.fee_start_date || '2026-07-06',
-                endDate: row.end_date || undefined,
-                actualAttendedSessions: row.actual_attended_sessions ?? undefined,
-                stopReason: row.stop_reason || undefined,
-                appliedFeePerSession: Number(row.applied_fee_per_session || 50000),
-                discountPercent: Number(row.discount_percent || 0),
-                discountAmount: Number(row.discount_amount || 0),
-                status: row.status || 'DANG_HOC',
-              });
-            }
-          }
-          p.enrollments = Array.from(eMap.values());
-        }
-
-        if (Array.isArray(receivablesRes.data) && receivablesRes.data.length > 0) {
-          const rMap = new Map((p.receivables || []).map((r) => [r.id, r]));
-          for (const row of receivablesRes.data) {
-            if (row.id && !rMap.has(row.id)) {
-              rMap.set(row.id, {
-                id: row.id,
-                code: row.code || row.id,
-                cycleName: row.cycle_name || 'Đợt học phí',
-                studentCode: row.student_code,
-                classCode: row.class_code,
-                enrollmentId: row.enrollment_id || '',
-                createdAt: (row.updated_at || '').slice(0, 10) || '2026-08-01',
-                dueDate: row.due_date || '2026-08-15',
-                periodStart: row.period_start || '2026-07-06',
-                periodEnd: row.period_end || '2026-08-30',
-                billingMethod: 'CYCLE_8_WEEKS',
-                sessionIds: [],
-                sessionDates: [],
-                sessionCount: Number(row.session_count || 0),
-                unitPrice: Number(row.unit_price || 50000),
-                grossAmount: Number(row.gross_amount || 0),
-                discountAmount: Number(row.discount_amount || 0),
-                adjustmentAmount: 0,
-                netAmount: Number(row.net_amount || 0),
-                openingDebtReference: 0,
-                paidAmount: Number(row.paid_amount || 0),
-                remainingDebt: Number(row.remaining_debt || 0),
-                status: row.status || 'CHUA_DONG',
-                note: row.note || '',
-              });
-            }
-          }
-          p.receivables = Array.from(rMap.values());
-        }
-
-        if (Array.isArray(receiptsRes.data) && receiptsRes.data.length > 0) {
-          const ptMap = new Map((p.receipts || []).map((pt) => [pt.id, pt]));
-          for (const row of receiptsRes.data) {
-            if (row.id && !ptMap.has(row.id)) {
-              ptMap.set(row.id, {
-                id: row.id,
-                receiptNumber: row.receipt_number || row.id,
-                studentCode: row.student_code,
-                paymentDate: row.payment_date || '2026-08-01',
-                totalAmount: Number(row.total_amount || 0),
-                allocatedTotal: Number(row.allocated_total || 0),
-                unallocatedCredit: Number(row.unallocated_credit || 0),
-                paymentMethod: row.payment_method === 'TM' ? 'TM' : 'CK',
-                collectorName: row.collector_name || 'Kế toán',
-                payerName: row.payer_name || undefined,
-                content: row.content || '',
-                allocations: Array.isArray(row.allocations) ? row.allocations : [],
-                createdAt: row.updated_at || new Date().toISOString(),
-              });
-            }
-          }
-          p.receipts = Array.from(ptMap.values());
-        }
-
-        if (Array.isArray(accountsRes.data) && accountsRes.data.length > 0) {
-          const aMap = new Map((p.accounts || []).map((a) => [a.id, a]));
-          for (const row of accountsRes.data) {
-            if (row.id && !aMap.has(row.id)) {
-              aMap.set(row.id, {
-                id: row.id,
-                username: row.username,
-                password: row.password || '123456',
-                fullName: row.full_name || row.username,
-                role: row.role || 'ACCOUNTANT',
-                linkedTeacherCode: row.linked_teacher_code || undefined,
-                linkedStudentCode: row.linked_student_code || undefined,
-                status: row.status === 'LOCKED' ? 'LOCKED' : 'ACTIVE',
-                lastLogin: row.updated_at || new Date().toISOString(),
-              });
-            }
-          }
-          p.accounts = Array.from(aMap.values());
-        }
-
         return {
           status: 'CONNECTED',
           data: p,
