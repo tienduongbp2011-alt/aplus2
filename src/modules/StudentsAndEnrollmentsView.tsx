@@ -40,6 +40,8 @@ export const StudentsAndEnrollmentsView: React.FC<{ mode: 'STUDENTS' | 'ENROLLME
     deleteUnenrolledStudents,
     saveEnrollment,
     saveEnrollmentsBatch,
+    deleteEnrollment,
+    deleteEnrollmentsBatch,
     settleEarlyWithdrawalEnrollment,
     selectedStudentCodeForDetail,
     setSelectedStudentCodeForDetail,
@@ -81,6 +83,7 @@ export const StudentsAndEnrollmentsView: React.FC<{ mode: 'STUDENTS' | 'ENROLLME
   const [isDeleteUnenrolledModalOpen, setIsDeleteUnenrolledModalOpen] = useState(false);
   const [selectedUnenrolledCodes, setSelectedUnenrolledCodes] = useState<string[]>([]);
   const [singleDeleteStudent, setSingleDeleteStudent] = useState<Student | null>(null);
+  const [selectedEnrollmentIds, setSelectedEnrollmentIds] = useState<string[]>([]);
 
   const [isImportOpen, setIsImportOpen] = useState(false);
 
@@ -910,12 +913,25 @@ export const StudentsAndEnrollmentsView: React.FC<{ mode: 'STUDENTS' | 'ENROLLME
                           Chưa đăng ký lớp (đã lưu hồ sơ)
                         </span>
                       ) : (
-                        <div className="space-y-0.5">
+                        <div className="space-y-1">
                           {stEnrolls.map((e) => {
                             const cls = db.classes.find((c) => c.code === e.classCode);
                             return (
-                              <div key={e.id} className="text-xs font-bold text-[#008653]">
-                                • {e.classCode} ({cls?.subject})
+                              <div
+                                key={e.id}
+                                className="inline-flex items-center gap-1.5 rounded bg-[#F2FAF5] border border-[#D4E8DB] px-2 py-0.5 text-xs font-bold text-[#008653] mr-1"
+                              >
+                                <span>
+                                  {e.classCode} ({cls?.subject})
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => deleteEnrollment(e.id)}
+                                  title={`Xoá học viên ${s.fullName} khỏi lớp ${e.classCode} (${cls?.subject || ''}) nếu đăng ký nhầm môn`}
+                                  className="ml-0.5 rounded text-red-500 hover:bg-red-100 hover:text-red-700 p-0.5 transition"
+                                >
+                                  <X className="h-3 w-3" />
+                                </button>
                               </div>
                             );
                           })}
@@ -1021,6 +1037,22 @@ export const StudentsAndEnrollmentsView: React.FC<{ mode: 'STUDENTS' | 'ENROLLME
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
+              {selectedEnrollmentIds.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const count = deleteEnrollmentsBatch(selectedEnrollmentIds);
+                    if (count > 0) {
+                      setSelectedEnrollmentIds([]);
+                    }
+                  }}
+                  className="inline-flex items-center gap-1.5 rounded bg-red-600 px-3.5 py-2 text-sm font-bold text-white shadow-xs hover:bg-red-700"
+                  title="Xoá các lượt đăng ký lớp học đã tích chọn (khi đăng ký nhầm môn)"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  Xoá khỏi lớp các mục đã chọn ({selectedEnrollmentIds.length})
+                </button>
+              )}
               {classFilter !== 'ALL' && (
                 <button
                   onClick={handleExportSelectedClassRoster}
@@ -1049,6 +1081,32 @@ export const StudentsAndEnrollmentsView: React.FC<{ mode: 'STUDENTS' | 'ENROLLME
             <table className="w-full border-collapse text-left text-sm">
               <thead>
                 <tr className="bg-[#00543C] text-white">
+                  <th className="p-3 w-10 text-center">
+                    <input
+                      type="checkbox"
+                      checked={
+                        filteredEnrollments.length > 0 &&
+                        filteredEnrollments.every((e) => selectedEnrollmentIds.includes(e.id))
+                      }
+                      onChange={() => {
+                        const allVisibleIds = filteredEnrollments.map((e) => e.id);
+                        const allSelected =
+                          allVisibleIds.length > 0 &&
+                          allVisibleIds.every((id) => selectedEnrollmentIds.includes(id));
+                        if (allSelected) {
+                          setSelectedEnrollmentIds((prev) =>
+                            prev.filter((id) => !allVisibleIds.includes(id))
+                          );
+                        } else {
+                          setSelectedEnrollmentIds((prev) =>
+                            Array.from(new Set([...prev, ...allVisibleIds]))
+                          );
+                        }
+                      }}
+                      title="Chọn / Bỏ chọn tất cả đăng ký đang hiển thị"
+                      className="h-4 w-4 rounded accent-[#008653] cursor-pointer"
+                    />
+                  </th>
                   <th className="p-3">Mã HV</th>
                   <th className="p-3">Họ tên học viên</th>
                   <th className="p-3">Lớp đăng ký & Môn</th>
@@ -1066,13 +1124,32 @@ export const StudentsAndEnrollmentsView: React.FC<{ mode: 'STUDENTS' | 'ENROLLME
                   const st = db.students.find((s) => s.code === enr.studentCode);
                   const cls = db.classes.find((c) => c.code === enr.classCode);
                   const gv = db.teachers.find((t) => t.code === cls?.teacherCode);
+                  const isChecked = selectedEnrollmentIds.includes(enr.id);
                   return (
-                    <tr key={enr.id} className="hover:bg-[#F2FAF5]/70">
+                    <tr
+                      key={enr.id}
+                      className={`hover:bg-[#F2FAF5]/70 ${isChecked ? 'bg-red-50/40' : ''}`}
+                    >
+                      <td className="p-3 text-center">
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={() =>
+                            setSelectedEnrollmentIds((prev) =>
+                              prev.includes(enr.id)
+                                ? prev.filter((id) => id !== enr.id)
+                                : [...prev, enr.id]
+                            )
+                          }
+                          className="h-4 w-4 rounded accent-[#008653] cursor-pointer"
+                        />
+                      </td>
                       <td className="p-3 font-bold text-[#00543C]">{enr.studentCode}</td>
                       <td className="p-3">
                         <div className="font-bold">{st?.fullName}</div>
                         <div className="text-xs text-[#173B2C]/70">
-                          PH: {st?.parentName} · {st?.phone}
+                          {st?.schoolClass ? `Lớp ${st.schoolClass} (${st.school}) · ` : ''}PH:{' '}
+                          {st?.parentName} · {st?.phone}
                         </div>
                       </td>
                       <td className="p-3">
@@ -1128,9 +1205,24 @@ export const StudentsAndEnrollmentsView: React.FC<{ mode: 'STUDENTS' | 'ENROLLME
                           </button>
                           <button
                             onClick={() => handleOpenEditEnroll(enr)}
+                            title="Sửa thông tin đăng ký lớp"
                             className="rounded border border-[#D4E8DB] p-1.5 text-[#173B2C] hover:bg-[#F2FAF5]"
                           >
                             <Edit2 className="h-4 w-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              deleteEnrollment(enr.id);
+                              setSelectedEnrollmentIds((prev) =>
+                                prev.filter((id) => id !== enr.id)
+                              );
+                            }}
+                            title={`Xoá học viên ${st?.fullName || enr.studentCode} khỏi danh sách đăng ký lớp ${enr.classCode} (${cls?.subject || ''}) nếu đăng ký nhầm môn`}
+                            className="inline-flex items-center gap-1 rounded border border-red-300 bg-red-50 px-2.5 py-1 text-xs font-bold text-red-700 hover:bg-red-100 transition"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                            Xoá khỏi lớp
                           </button>
                         </div>
                       </td>
@@ -1819,6 +1911,7 @@ export const StudentsAndEnrollmentsView: React.FC<{ mode: 'STUDENTS' | 'ENROLLME
                         <th className="p-2.5">Tính phí từ ngày</th>
                         <th className="p-2.5 text-right">Đơn giá/buổi</th>
                         <th className="p-2.5">Trạng thái</th>
+                        <th className="p-2.5 text-right">Thao tác</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[#D4E8DB]">
@@ -1839,6 +1932,17 @@ export const StudentsAndEnrollmentsView: React.FC<{ mode: 'STUDENTS' | 'ENROLLME
                                 {formatCurrency(e.appliedFeePerSession)}
                               </td>
                               <td className="p-2.5 font-bold text-[#008653]">{e.status}</td>
+                              <td className="p-2.5 text-right">
+                                <button
+                                  type="button"
+                                  onClick={() => deleteEnrollment(e.id)}
+                                  title="Xoá học viên khỏi lớp này nếu đăng ký nhầm môn"
+                                  className="inline-flex items-center gap-1 rounded border border-red-200 bg-red-50 px-2 py-1 text-xs font-bold text-red-600 hover:bg-red-100"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                  Xoá khỏi lớp
+                                </button>
+                              </td>
                             </tr>
                           );
                         })}

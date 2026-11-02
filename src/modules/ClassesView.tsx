@@ -43,6 +43,7 @@ export const ClassesView: React.FC = () => {
     saveClass,
     deleteClass,
     saveEnrollment,
+    deleteEnrollment,
     settleEarlyWithdrawalEnrollment,
     selectedClassCodeForDetail,
     setSelectedClassCodeForDetail,
@@ -398,7 +399,7 @@ export const ClassesView: React.FC = () => {
                       <th className="p-2.5 text-center">Số buổi học</th>
                       <th className="p-2.5 text-right">Đơn giá / Tổng tiền</th>
                       <th className="p-2.5">Trạng thái ĐK</th>
-                      <th className="p-2.5 text-right">Báo nghỉ / Chốt phí</th>
+                      <th className="p-2.5 text-right">Thao tác</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#D4E8DB]">
@@ -452,12 +453,23 @@ export const ClassesView: React.FC = () => {
                             </span>
                           </td>
                           <td className="p-2.5 text-right">
-                            <button
-                              onClick={() => openStopSettlementModal(enr, selectedClass)}
-                              className="rounded border border-amber-600 bg-amber-50 px-2.5 py-1 text-xs font-bold text-amber-800 hover:bg-amber-100"
-                            >
-                              Báo nghỉ / Tính tiền
-                            </button>
+                            <div className="inline-flex items-center gap-1.5">
+                              <button
+                                onClick={() => openStopSettlementModal(enr, selectedClass)}
+                                className="rounded border border-amber-600 bg-amber-50 px-2.5 py-1 text-xs font-bold text-amber-800 hover:bg-amber-100"
+                              >
+                                Báo nghỉ / Tính tiền
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => deleteEnrollment(enr.id)}
+                                title={`Xoá học viên ${st?.fullName || enr.studentCode} khỏi lớp ${selectedClass.code} nếu đăng ký nhầm môn`}
+                                className="inline-flex items-center gap-1 rounded border border-red-300 bg-red-50 px-2.5 py-1 text-xs font-bold text-red-700 hover:bg-red-100 transition"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                                Xoá khỏi lớp
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       );

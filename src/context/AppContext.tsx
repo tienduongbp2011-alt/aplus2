@@ -82,6 +82,8 @@ interface AppContextValue {
   deleteUnenrolledStudents: (targetCodes?: string[]) => number;
   saveEnrollment: (enrollment: Enrollment, isEdit: boolean) => boolean;
   saveEnrollmentsBatch: (enrollments: Enrollment[]) => number;
+  deleteEnrollment: (enrollmentId: string) => boolean;
+  deleteEnrollmentsBatch: (enrollmentIds: string[]) => number;
   settleEarlyWithdrawalEnrollment: (params: {
     enrollmentId: string;
     stopDate: string;
@@ -983,6 +985,79 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return validToSave.length;
   };
 
+  const deleteEnrollment = (enrollmentId: string): boolean => {
+    const enr = db.enrollments.find((e) => e.id === enrollmentId);
+    if (!enr) {
+      notify('Không tìm thấy bản ghi đăng ký lớp học cần xoá.', 'ERROR');
+      return false;
+    }
+    const student = db.students.find((s) => s.code === enr.studentCode);
+    const cls = db.classes.find((c) => c.code === enr.classCode);
+
+    updateDb(
+      (prev) => ({
+        ...prev,
+        enrollments: prev.enrollments.filter((e) => e.id !== enrollmentId),
+        // Tự động xoá khoản phải thu chưa đóng tiền của lần đăng ký nhầm môn này
+        receivables: prev.receivables.filter(
+          (r) => !(r.enrollmentId === enrollmentId && r.paidAmount === 0)
+        ),
+      }),
+      {
+        action: 'XOÁ ĐĂNG KÝ LỚP HỌC (ĐĂNG KÝ NHẦM MÔN)',
+        target: `HV ${enr.studentCode} (${student?.fullName || ''}) – Lớp ${enr.classCode}`,
+        detail: `Đã xoá học viên khỏi danh sách đăng ký lớp ${cls?.name || enr.classCode} (${cls?.subject || ''}).`,
+      }
+    );
+
+    if (supabase) {
+      Promise.resolve(supabase.from('enrollments').delete().eq('id', enrollmentId)).catch(() => {});
+    }
+
+    notify(
+      `Đã xoá học viên ${student?.fullName || enr.studentCode} khỏi danh sách đăng ký lớp ${cls?.name || enr.classCode} (${cls?.subject || ''}).`,
+      'SUCCESS'
+    );
+    return true;
+  };
+
+  const deleteEnrollmentsBatch = (enrollmentIds: string[]): number => {
+    if (!enrollmentIds || enrollmentIds.length === 0) return 0;
+    const idSet = new Set(enrollmentIds);
+    const targets = db.enrollments.filter((e) => idSet.has(e.id));
+    if (targets.length === 0) {
+      notify('Không tìm thấy đăng ký học nào để xoá.', 'WARNING');
+      return 0;
+    }
+
+    updateDb(
+      (prev) => ({
+        ...prev,
+        enrollments: prev.enrollments.filter((e) => !idSet.has(e.id)),
+        receivables: prev.receivables.filter(
+          (r) => !(r.enrollmentId && idSet.has(r.enrollmentId) && r.paidAmount === 0)
+        ),
+      }),
+      {
+        action: 'XOÁ HÀNG LOẠT ĐĂNG KÝ LỚP HỌC (NHẦM MÔN)',
+        target: `${targets.length} lượt đăng ký`,
+        detail: `Đã xoá ${targets.length} lượt đăng ký lớp học khỏi danh sách các lớp tại trung tâm.`,
+      }
+    );
+
+    if (supabase) {
+      Promise.resolve(
+        supabase.from('enrollments').delete().in('id', Array.from(idSet))
+      ).catch(() => {});
+    }
+
+    notify(
+      `Đã xoá thành công ${targets.length} lượt đăng ký lớp học khỏi danh sách lớp tại trung tâm!`,
+      'SUCCESS'
+    );
+    return targets.length;
+  };
+
   const settleEarlyWithdrawalEnrollment = ({
     enrollmentId,
     stopDate,
@@ -1573,6 +1648,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         deleteUnenrolledStudents,
         saveEnrollment,
         saveEnrollmentsBatch,
+        deleteEnrollment,
+        deleteEnrollmentsBatch,
         settleEarlyWithdrawalEnrollment,
         saveSession,
         saveBulkSessions,
